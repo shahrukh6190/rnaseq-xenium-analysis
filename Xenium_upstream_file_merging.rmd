@@ -1,0 +1,120 @@
+---
+title: "Xenium Analysis Workflow"
+author: "Shah"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+# 1. Load Required Packages
+```{r load-packages}
+library(Seurat)
+library(dplyr)
+library(cowplot)
+library(ggplot2)
+library(arrow)
+library(XeniumSpatialAnalysis)
+library(harmony)
+library(edgeR)
+library(remotes)
+library(patchwork)
+library(clustree)
+library(Matrix)
+library(ggrepel)
+library(ggrastr)
+```
+
+# 2. Define File Paths
+```{r set-paths}
+setwd("~/labs/lamantia/Shah/Xenium Files")
+
+home <- "~/labs/lamantia/Shah/Xenium Files/LD-WT-P5_NAC 9.10.25"
+save.location <- "~/labs/lamantia/Shah/Xenium Files/saveRDS"
+
+setwd(home)
+```
+
+# 3. Load and Save Individual Samples
+```{r load-samples}
+samples <- list(
+  list(fov="4xWT_270", file="output-XETG00181__0071270__WT__20250908__180623", save="4xWT.rds"),
+  list(fov="1xWT_929", file="output-XETG00181__0070929__WT__20250908__180623", save="1xWT.rds"),
+  list(fov="5xLD_270", file="output-XETG00181__0071270__LD__20250908__180623", save="5xLD.rds"),
+  list(fov="5xLD_NAC_929", file="output-XETG00181__0070929__LD_NAC__20250908__180623", save="5xLD_NAC.rds"),
+  list(fov="3xWT_NAC_929", file="output-XETG00181__0070929__WT_NAC__20250908__180623", save="3xWT_NAC.rds")
+)
+
+setwd(save.location)
+for (s in samples) {
+  obj <- LoadXenium(file.path(home, s$file), fov=s$fov)
+  obj <- subset(obj, subset = nCount_Xenium > 0)
+  saveRDS(obj, s$save)
+  rm(obj)
+}
+```
+
+# 4. Merge Samples into a Single Seurat Object
+```{r merge-samples}
+S_WT_270     <- readRDS("4xWT.rds")
+S_WT_929     <- readRDS("1xWT.rds")
+S_LD_270     <- readRDS("5xLD.rds")
+S_LD_NAC_929 <- readRDS("5xLD_NAC.rds")
+S_WT_NAC_929 <- readRDS("3xWT_NAC.rds")
+
+S_WT_270$sample     <- "4xWT_270";    S_WT_270$genotype     <- "WT"
+S_WT_929$sample     <- "1xWT_929";    S_WT_929$genotype     <- "WT"
+S_LD_270$sample     <- "5xLD_270";    S_LD_270$genotype     <- "LD"
+S_LD_NAC_929$sample <- "5xLD_NAC_929";S_LD_NAC_929$genotype <- "LD_NAC"
+S_WT_NAC_929$sample <- "3xWT_NAC_929";S_WT_NAC_929$genotype <- "WT_NAC"
+
+all_samples <- merge(
+  S_WT_270,
+  y = list(S_WT_929, S_LD_270, S_LD_NAC_929, S_WT_NAC_929)
+)
+
+table(all_samples$genotype, all_samples$sample)
+```
+
+# 5. Preprocessing & Normalization
+```{r preprocess}
+all_samples <- SCTransform(all_samples, assay = "Xenium", clip.range = c(-10, 10), verbose = TRUE)
+```
+
+# 6. PCA and Dimensionality Reduction
+```{r pca}
+all_samples <- RunPCA(all_samples, npcs = 30, features = rownames(all_samples))
+ElbowPlot(all_samples, ndims = 30)
+
+pca_var <- all_samples[["pca"]]@stdev^2
+pca_var_perc <- pca_var / sum(pca_var) * 100
+suggested_pcs <- which(cumsum(pca_var_perc) >= 80)[1]
+cat("Suggested PCs:", suggested_pcs, "\n")
+
+saveRDS(all_samples, file = file.path(save.location, "all_samples.rds"))
+all_samples <- readRDS(file.path(save.location, "all_samples.rds"))
+```
+
+# 7. Clustering & UMAP
+```{r clustering}
+all_samples <- RunUMAP(all_samples, dims = 1:15)
+all_samples <- FindNeighbors(all_samples, reduction = "pca", dims = 1:15)
+all_samples <- FindClusters(all_samples, resolution = 0.2)
+
+DimPlot(all_samples, reduction = "umap", raster = FALSE, cols = 'glasbey') +
+  DarkTheme() + coord_fixed()
+```
+
+# 8. Cluster Tree Visualization
+```{r clustree}
+all_samples <- FindClusters(all_samples, resolution = c(0.2, 0.5, 0.8, 1.0, 1.5))
+clustree(all_samples, prefix = "SCT_snn_res.")
+```
