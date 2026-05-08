@@ -1,0 +1,407 @@
+title: "R code for EdgeR transcriptome analysis"
+author: "Shah Rukh"
+date: "05/28/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Differential expression analysis with EdgeR - Cortex WT vs LgDel
+
+
+```{r libraries}
+rm(list=ls())
+library(tidyverse)
+library(edgeR)
+library(factoextra)
+library(plotly)
+library(tidyr)
+library(pheatmap)
+library(statmod)
+library(writexl)
+library(biomaRt)
+library(readxl)
+library(DGEobj.utils)
+
+```
+
+
+
+
+
+Cleaning the data to generate counttablefull
+```{r counttablefull}
+files <- dir(path = "/Users/shahrukh/Downloads/cortical_culture_rnaseq/LgDel_NACvsWT_tab_files", 
+             pattern = "*.tab", full.names = T)
+
+counttablefull <- files %>%
+  map(read_tsv,  skip = 4, col_names = FALSE ) %>%
+  purrr::reduce(cbind) 
+
+
+
+datasets <-
+  files %>%
+  stringr::str_replace("/Users/shahrukh/Downloads/cortical_culture_rnaseq/LgDel_NACvsWT_tab_files/", "") %>% # replace data/ at the beginning of filename
+  stringr::str_replace("ReadsPerGene.out.tab", "") # replace ReadsPerGene.out.tab end of name
+datasets
+
+columnnames <- c()
+for (i in datasets) {
+  columnnames <- c(columnnames,
+                   paste0("gene_", i),
+                   paste0(i, "_unstranded"),
+                   paste0(i, "_forwardstrand"),
+                   paste0(i, "_reversestrand")
+  )
+}
+
+
+names(counttablefull) <- columnnames
+rm(columnnames, datasets)
+
+
+counttablefull <- counttablefull %>%
+  dplyr::mutate(ensembl_gene = gene_WT_2) %>%
+  dplyr::select(-starts_with("gene"))
+
+```
+
+Test for strandedness and selecting strand specific column
+
+```{r Test for strandedness}
+counttablefull %>% # remove gene name column
+  dplyr::select(-ensembl_gene) %>% # find column sum
+  summarise_each(funs(sum)) %>%  # gather wide data (columns) into a long table
+  gather(library, counts) %>% # split library column into dataset and protocol 
+  separate(library, into = c("treatment", "replicate", "stranding"), sep="_") %>% # split library into 3 columns
+  spread(stranding,counts) %>% # make columns for each of the strandings
+  dplyr::mutate(propF = forwardstrand/unstranded, propR = reversestrand/unstranded) # assess rev/unst and for/unst
+
+
+counttablefull %>% # remove gene name column
+  dplyr::select(ends_with("unstranded")) %>%
+  summarise_each(funs(sum)) %>%  # gather wide data (columns) into a long table
+  gather(library, counts) %>%  # split library column into dataset and protocol
+  separate(library, into = c("treatment", "replicate", "stranding"), sep="_") %>%
+  dplyr::select(-stranding) %>%
+  ggplot(aes(y = counts, x = treatment, fill = replicate)) +geom_bar(stat = "identity", position = "dodge")
+#ggsave("count_by_gene_table.png")
+
+
+counttablefull <- counttablefull %>% 
+  dplyr::select(-ends_with("reversestrand"), -ends_with("forwardstrand")) 
+names(counttablefull) <- str_replace(names(counttablefull), "_unstranded", "")
+dim(counttablefull)
+```
+
+
+
+
+```{r plot the counttablefull}
+counttablefull %>%
+  dplyr::select(-ensembl_gene) %>%
+  gather(library, value) %>%
+  ggplot(aes(x = value)) + geom_histogram(bins = 100) + facet_wrap(~library)
+#ggsave("genes_with_low_exp_hist.png")
+counttablefull %>%
+  dplyr::select(-ensembl_gene) %>%
+  gather(library, value) %>%
+  filter(value > 0) %>% 
+  ggplot(aes(x = value)) + geom_density() + facet_wrap(~library) + scale_x_log10()
+#ggsave("genes_with_low_exp_log.png")
+counttablefull %>%
+  dplyr::select(-ensembl_gene) %>%
+  gather(library, value) %>%
+  filter(value > 0) %>% 
+  ggplot(aes(y = value)) + geom_boxplot() + facet_wrap(~library) 
+#ggsave("genes_with_low_exp_box.png")
+```
+
+
+```{r Remove ensembl gene version character}
+###remove gene version from ensembl ids####
+counttablefull <- counttablefull %>% separate(ensembl_gene, into=c("ensembl_gene", "version"), sep = "\\.")
+counttablefull <- subset (counttablefull, select = -version)
+```
+
+
+
+```{r Make counttable matrix and make cpm counttable}
+counttablematrix <- counttablefull %>%
+  dplyr::select(-ensembl_gene) %>%
+  as.matrix()
+
+row.names(counttablematrix) <- counttablefull$ensembl_gene
+counttable_cpm <- cpm(counttablematrix)
+head 
+```
+
+
+
+```{r filter counttable_cpm using cpm threshold cutoff and required sample number meeting cpmThreshold}
+
+counttablefull %>%
+  dplyr::select(-ensembl_gene) %>%
+  purrr::modify(~sum(.)) %>% 
+  distinct() %>%
+  gather(library, counts) %>%  # split library column into dataset and protocol
+  dplyr::mutate(millionreads = counts/(10^6)) %>%
+  dplyr::mutate(cpmThreshold = 15/millionreads)  %>%
+  dplyr::mutate(mycutoff = 0.35 * millionreads)
+
+subsetting_matrix <- counttable_cpm > 0.35
+head (subsetting_matrix)
+
+subsetting_vector <- rowSums(subsetting_matrix) >= 3
+head(subsetting_vector)
+
+counttablematrix_filt <- counttablematrix[subsetting_vector,]
+dim(counttablematrix_filt)
+```
+
+
+
+## Differential expression analysis starts
+```{r create matrix and visualize unprocessed data}
+
+mydgelist <- DGEList(counttablematrix_filt)
+mydgelist
+
+head(mydgelist$samples)
+
+mydgelist$samples %>% 
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  separate(rowname, into = c("treatment", "replicate"), sep="_") %>%
+  ggplot(aes(y = lib.size, x = treatment, fill = replicate)) +geom_bar(stat = "identity", position = "dodge")
+#ggsave("count_by_gene_filtered.png")
+
+mydgelist_cpm <- cpm(mydgelist, log = TRUE)
+boxplot(mydgelist_cpm)
+abline(h=median(mydgelist_cpm),col="blue")
+title("Boxplots of logCPMs (unnormalised)")
+
+mydgelist_cpm %>% 
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  gather(library, log2cpm, -rowname) %>%
+  separate(library, into = c("treatment", "replicate"), sep = "_") %>%
+  ggplot(aes(x = treatment, y = log2cpm, fill = replicate)) + geom_boxplot() +
+  geom_hline(yintercept = median(mydgelist_cpm), lty = 2)
+
+res.pca <- prcomp(t(mydgelist_cpm))
+colors <- as.factor(str_split(rownames(mydgelist$samples), "_", simplify = TRUE)[,1])
+fviz_pca_ind(res.pca,
+             col.ind = colors,
+             palette = "Set1",
+             repel = TRUE,    # Avoid text overlapping
+             title = "PCA_plot_of_WT_vs_LgDel_CNgV")
+#ggsave("PCA_plot_of_WT_vs_LgDel_CNgV.png")
+
+fviz_eig(res.pca, addlabels = TRUE)
+fviz_contrib(res.pca, choice = "var", axes = 1, top = 100)
+
+
+plotMDS(mydgelist,col= c("red","blue")[colors])
+legend("topright",fill=c("red","blue"),legend=levels(colors))
+#ggsave("MDS_PCA_plot_of_WT_vs_LgDel_CNgV.png")
+
+most_var_genes <- sort(apply(mydgelist_cpm, 1, var), decreasing=TRUE)[1:500]
+mydgelist_cpm_most_var <- mydgelist_cpm[most_var_genes,]
+
+#pheatmap(mydgelist_cpm_most_var, show_rownames  = FALSE) # hiding rownames as there are 500 unreadable ones
+
+my_z_score <- function(x){
+  return( (x - mean(x)) / sd(x))
+}
+
+mydgelist_cpm_most_var2 <-  t(apply(mydgelist_cpm_most_var, 1, my_z_score))
+#pheatmap(mydgelist_cpm_most_var2, show_rownames  = FALSE)
+#ggsave("clustering_by_500_most_var_genes.png")
+
+mydgelist_cpm2 <-  t(apply(mydgelist_cpm, 1, my_z_score))
+#pheatmap(mydgelist_cpm2, show_rownames  = FALSE)
+#ggsave("clustering_by_all_genes.png")
+```
+
+```{r incorporate batch effect into mydegelist_(edgeR manual) compute correlation between groups and design matrix}
+
+mydgelist$samples$norm.factors
+
+mydgelist <- calcNormFactors(mydgelist)
+mydgelist$samples$norm.factors
+
+group <- colors
+Time <- factor(c("2", "3", "3", "4", "4", "1","1", "1", "3", "4")) 
+## This code is to just check the correlations between different batches
+#design <- model.matrix(~ 0 + Time + Time : group)
+#logFC <- predFC(mydgelist,design,prior.count=1,dispersion=0.05)
+#cor(logFC[,5:8])
+
+#This is the design for the Differential expression analysis
+#design <- model.matrix(~group)
+design <- model.matrix(~ 0 + Time + group)
+#colnames(design) <- levels(group)
+design
+
+```
+
+
+
+Robust glmlrt - less stringent
+```{r estimate dispersion and perform robust generalized linear modeling with mydeglist_all genes}
+mydgelist$genes <- data.frame(ENSEMBL=rownames(mydgelist))
+
+mydgelist <- estimateGLMRobustDisp(mydgelist, design)
+mydgelist$common.dispersion
+plotBCV(mydgelist)
+
+
+fit <- glmFit(mydgelist, design=design)
+#plotQLDisp(fit)
+
+
+lrt <- glmLRT(fit)
+out1 <- topTags(lrt, n=Inf, sort.by = "PValue")
+out1 <- as.data.frame(out1[["table"]])
+
+
+out1 <- out1 %>%
+  rename("ensembl_gene_id" = "ENSEMBL")
+
+summary(out1)
+```
+
+
+
+```{r estimate dispersion and perform robust generalized linear modeling with mydeglist_all genes}
+#*************************************************************************#
+
+mydgelistTPM <- DGEList(counttablematrix)
+mydgelistTPM <- calcNormFactors(mydgelistTPM)
+mydgelistTPM$samples$norm.factors
+mydgelistTPM$genes <- data.frame(ENSEMBL=rownames(mydgelistTPM))
+mydgelistTPM <- estimateGLMRobustDisp(mydgelistTPM, design)
+
+
+normalized_counts <- cpm(mydgelistTPM)
+
+Gene_lengths <- read_csv("~/Downloads/Gene_lengths.csv")
+Gene_lengths <- merge(normalized_counts, Gene_lengths, by.x=0, by.y="ensembl_gene_id")
+Gene_lengths <- Gene_lengths %>%
+  dplyr::select(c(1,12))
+
+Gene_lengths <- Gene_lengths %>%
+  pivot_wider(names_from = Row.names, values_from = gene_length)
+(length(Gene_lengths) == nrow(normalized_counts))
+
+Gene_lengths <- as.vector(Gene_lengths) %>% as.numeric()
+tpm <- tpm.direct(normalized_counts, geneLength = Gene_lengths)
+tpm <- data.frame(ensembl_gene_id = row.names(tpm), tpm)
+
+tpm <- tpm %>%
+  mutate(LgDel_NAC_mean = rowMeans(dplyr::select(.,c(2:6)))) %>%
+  mutate(WT_mean = rowMeans(dplyr::select(.,c(7:11))))
+
+
+```
+
+
+
+
+```{r estimate dispersion and perform basic generalized linear modeling with mydeglist 10000 genes}
+
+mydgelist$genes <- data.frame(ENSEMBL=rownames(mydgelist))
+
+mydgelist <- estimateDisp(mydgelist, design, robust=TRUE)
+mydgelist$common.dispersion
+plotBCV(mydgelist)
+
+fit <- glmFit(mydgelist, design)
+#plotQLDisp(fit)
+
+
+lrt <- glmLRT(fit)
+out2 <- topTags(lrt, n=Inf, sort.by = "PValue")
+out2 <- as.data.frame(out2[["table"]])
+
+out2 <- out2 %>%
+  rename("ensembl_gene_id" = "ENSEMBL")
+
+summary(out2)
+
+```
+
+
+
+
+##glmQLFit - more stringent
+```{r estimate dispersion and perform quasi-likelihood negative binomial generalized log-linear model with mydeglist genes}
+
+mydgelist$genes <- data.frame(ENSEMBL=rownames(mydgelist))
+
+mydgelist <- estimateDisp(mydgelist, design, robust=TRUE)
+mydgelist$common.dispersion
+plotBCV(mydgelist)
+
+fit <- glmQLFit(mydgelist, design, robust=TRUE)
+plotQLDisp(fit)
+
+
+qlf <- glmQLFTest(fit)
+out3 <- topTags(qlf, n=Inf, sort.by = "PValue")
+
+out3 <- as.data.frame(out3[["table"]])
+out3 <- out3 %>%
+  rename("ensembl_gene_id" = "ENSEMBL")
+
+summary(out3)
+
+```
+
+## Annotations using biomart with final gene table
+```{r Annotate out table using mydgelist column names and biomart write xlsx table}
+
+
+  ensembl <-  useDataset("mmusculus_gene_ensembl",mart=useMart("ensembl"))
+  
+
+#searchAttributes(mart = ensembl, pattern ="location")
+
+
+  annotations <-  getBM(attributes = c("ensembl_gene_id", "mgi_id","mgi_symbol", "description", "gene_biotype", "chromosome_name"), 
+                        filters = "ensembl_gene_id", 
+                        values=rownames(mydgelistTPM), 
+                        mart=ensembl, 
+                        useCache = FALSE)
+  
+ #genelength <- getGeneLengthAndGCContent(annotations$ensembl_gene_id, "mm10", mode = "org.db")
+
+anno_TPM <- merge(tpm, annotations, by = c("ensembl_gene_id" = "ensembl_gene_id"), all.x = TRUE)
+PNs_5WTvs5LgDel_NAC <- merge(out1, anno_TPM, by = c("ensembl_gene_id" = "ensembl_gene_id"), all.y = TRUE)
+
+#now merge tpm files, write table, remove duplicate ID cloumns manually then read again and merge with annotated glmlrt output from above
+# tpmfiles <- dir(path = "/Users/shahrukh/Downloads/cortical_culture_rnaseq/TPM_filesLD_NACvsWT", 
+#              pattern = "*.csv", full.names = T)
+# 
+# 
+# tpmtable <- tpmfiles %>%
+#   map(read_csv, col_names = TRUE, show_col_types = TRUE) %>%
+#   reduce(inner_join, by = "ensembl_gene_id") %>%
+#   group_by(ensembl_gene_id) %>%
+#   filter(n_distinct(across(everything())) == 1) %>%
+#   ungroup()
+
+# EdgeR_glmlrt_TPM_4WTvs3LD_NAC <- inner_join(anno_glmlrt, tpmtable, by="ensembl_gene_id", all.x = TRUE)
+
+write_xlsx(PNs_5WTvs5LgDel_NAC,'PNs_5WTvs5LgDel_NAC.xlsx')
+
+
+
+```
+
