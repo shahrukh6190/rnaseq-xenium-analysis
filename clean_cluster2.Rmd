@@ -1,0 +1,2711 @@
+---
+title: "Cluster 2 subset"
+author: "Shah"
+output: html_document
+date: "2025-11-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+```{r load-packages}
+library(Seurat)
+library(dplyr)
+library(cowplot)
+library(ggplot2)
+library(arrow)
+library(XeniumSpatialAnalysis)
+library(harmony)
+library(edgeR)
+library(remotes)
+library(patchwork)
+library(clustree)
+library(Matrix)
+library(hdf5r)
+library(circlize)
+library(ComplexHeatmap)
+library(DESeq2)
+```
+
+```{r set-paths}
+setwd("~/labs/lamantia/Shah/Xenium Files")
+home <- "~/labs/lamantia/Shah/Xenium Files/LD-WT-P5_NAC 9.10.25"
+save.location <- "~/labs/lamantia/Shah/Xenium Files/saveRDS"
+#all_samples <- readRDS(file.path(save.location, "no_22q_all_samples_with_clean_replicate_metadata_SCT_Harmony_after_findcluster_res0.1.rds"))
+```
+
+```{r # 1. Investigate and clean endothelial contamination from cluster 2, removes top10% with endothilial expression}
+
+
+# First, define which cells are in cluster 2
+cluster_2_cells <- Cells(all_samples)[all_samples$seurat_clusters == 2]
+
+# Define common endothelial markers (adjust based on your species if needed)
+endothelial_markers <- c("Pecam1", "Cldn5", "Kdr")
+
+
+# Now check the expression of endothelial markers in cluster 2
+cluster_2_expression <- FetchData(all_samples, 
+                                 vars = endothelial_markers,
+                                 cells = cluster_2_cells)
+
+print("Endothelial marker expression in cluster 2:")
+print(summary(cluster_2_expression))
+
+# Check what percentage of cluster 2 cells express endothelial markers above threshold
+threshold <- 1  # Adjust this threshold based on your data
+for (marker in endothelial_markers) {
+  pct_expressing <- mean(cluster_2_expression[, marker] > threshold) * 100
+  print(paste("Percentage of cluster 2 cells expressing", marker, "above", threshold, ":", 
+              round(pct_expressing, 2), "%"))
+}
+
+# Visualize the expression of these markers in cluster 2 vs other cells
+FeaturePlot(all_samples, 
+            features = endothelial_markers, 
+            cells = cluster_2_cells,
+            pt.size = 0.5,
+            max.cutoff = 'q95') +
+  ggtitle("Endothelial Marker Expression in Cluster 2 Cells")
+
+# Also check in the context of all cells
+FeaturePlot(all_samples, 
+            features = endothelial_markers,
+            pt.size = 0.5,
+            max.cutoff = 'q95') +
+  ggtitle("Endothelial Marker Expression - All Cells")
+
+# Let's also check which clusters actually express endothelial markers
+print("Checking endothelial marker expression across all clusters:")
+for (marker in endothelial_markers) {
+  avg_expression <- AverageExpression(all_samples, 
+                                     features = marker, 
+                                     group.by = "seurat_clusters")[[1]]
+  print(paste("Average", marker, "expression by cluster:"))
+  print(avg_expression)
+}
+
+# Option: Create a more stringent cluster 2 definition
+# Remove cells from cluster 2 that express high levels of endothelial markers
+
+# Calculate a composite endothelial score
+endothelial_scores <- rowSums(cluster_2_expression)
+high_endothelial_cells <- names(endothelial_scores)[endothelial_scores > quantile(endothelial_scores, 0.9)]
+
+# Create a cleaned cluster 2 definition
+all_samples$is_cluster_2_clean <- ifelse(
+  all_samples$seurat_clusters == 2 & !(Cells(all_samples) %in% high_endothelial_cells),
+  "Cluster_2_clean",
+  "Other"
+)
+
+print(paste("Number of cells removed from cluster 2:", length(high_endothelial_cells)))
+print(paste("Remaining cluster 2 cells:", sum(all_samples$is_cluster_2_clean == "Cluster_2_clean")))
+
+# Plot the cleaned version
+p_umap_clean <- DimPlot(all_samples, 
+                        group.by = "is_cluster_2_clean", 
+                        cols = c("Cluster_2_clean" = "#FF7F00", "Other" = "gray90"), 
+                        pt.size = 0.5) +
+  ggtitle("Cluster 2 (Cleaned) - Removed High Endothelial Expressing Cells")
+print(p_umap_clean)
+ggsave("cluster_2_cleaned_umap.pdf", p_umap_clean, width = 10, height = 8)
+
+
+# Define neuronal markers to check
+neuronal_markers <- c("Gad1", "Gad2", "Cux1")
+
+# Check expression in the cleaned cluster 2
+cluster_2_clean_cells <- Cells(all_samples)[all_samples$is_cluster_2_clean == "Cluster_2_clean"]
+
+# Get expression data for neuronal markers in cleaned cluster 2
+cluster_2_clean_expression <- FetchData(all_samples, 
+                                       vars = neuronal_markers,
+                                       cells = cluster_2_clean_cells)
+
+print("Neuronal marker expression in cleaned Cluster 2:")
+print(apply(cluster_2_clean_expression, 2, summary))
+
+# Check what percentage of cleaned cluster 2 cells express these markers above threshold
+threshold <- 1  # Use the same threshold as before
+for (marker in neuronal_markers) {
+  pct_expressing <- mean(cluster_2_clean_expression[, marker] > threshold) * 100
+  print(paste("Percentage of cleaned Cluster 2 cells expressing", marker, "above", threshold, ":", 
+              round(pct_expressing, 2), "%"))
+}
+
+# Visualize the expression in cleaned cluster 2 cells
+FeaturePlot(all_samples, 
+            features = neuronal_markers, 
+            cells = cluster_2_clean_cells,
+            pt.size = 0.5,
+            order = TRUE,  # Plot positive cells on top
+            max.cutoff = 'q95') +
+  ggtitle("Neuronal Marker Expression in Cleaned Cluster 2 Cells")
+
+# Also check in the context of all cells for comparison
+FeaturePlot(all_samples, 
+            features = neuronal_markers,
+            pt.size = 0.5,
+            order = TRUE,
+            max.cutoff = 'q95') +
+  ggtitle("Neuronal Marker Expression - All Cells")
+
+# Check expression across all clusters for these neuronal markers
+print("Checking neuronal marker expression across all clusters:")
+for (marker in neuronal_markers) {
+  avg_expression <- AverageExpression(all_samples, 
+                                     features = marker, 
+                                     group.by = "seurat_clusters")[[1]]
+  print(paste("Average", marker, "expression by cluster:"))
+  print(avg_expression)
+}
+
+# Create a violin plot to compare expression across clusters
+VlnPlot(all_samples,
+        features = neuronal_markers,
+        group.by = "seurat_clusters",
+        pt.size = 0,
+        ncol = 1) +
+  ggtitle("Neuronal Marker Expression by Cluster")
+
+# Compare expression before and after cleaning
+print("=== COMPARISON: Original vs Cleaned Cluster 2 ===")
+
+# Get expression in original cluster 2
+cluster_2_original_expression <- FetchData(all_samples, 
+                                          vars = neuronal_markers,
+                                          cells = cluster_2_cells)
+
+for (marker in neuronal_markers) {
+  original_mean <- mean(cluster_2_original_expression[, marker])
+  cleaned_mean <- mean(cluster_2_clean_expression[, marker])
+  original_pct <- mean(cluster_2_original_expression[, marker] > threshold) * 100
+  cleaned_pct <- mean(cluster_2_clean_expression[, marker] > threshold) * 100
+  
+  print(paste(marker, ":"))
+  print(paste("  Original - Mean:", round(original_mean, 3), "Pct > threshold:", round(original_pct, 1), "%"))
+  print(paste("  Cleaned  - Mean:", round(cleaned_mean, 3), "Pct > threshold:", round(cleaned_pct, 1), "%"))
+  print(paste("  Change    - Mean:", round(cleaned_mean - original_mean, 3), "Pct:", round(cleaned_pct - original_pct, 1), "%"))
+}
+  
+  
+  
+  
+  
+```
+  
+```{r # 2. Create Cluster 2 subset object from the cleaned version}
+
+
+
+cluster_2_clean_cells <- Cells(all_samples)[all_samples$is_cluster_2_clean == "Cluster_2_clean"]
+cluster_2_clean <- subset(all_samples, cells = cluster_2_clean_cells)
+
+# Check the subset
+print(paste("Number of cells in cleaned Cluster 2:", ncol(cluster_2_clean)))
+print("Genotype distribution in cleaned Cluster 2:")
+print(table(cluster_2_clean$genotype))
+print("Animal ID distribution in cleaned Cluster 2:")
+print(table(cluster_2_clean$animal_id))
+
+```
+
+```{r # 3. Process Cleaned Cluster 2 with SCT, Harmony, and Clustering}
+plan("multisession", workers = 12)
+options(future.globals.maxSize = 150 * 1024^3)
+
+DefaultAssay(cluster_2_clean) <- "Xenium"
+
+# SCTransform normalization
+cluster_2_clean <- SCTransform(
+  cluster_2_clean,
+  assay = "Xenium",
+  method = "glmGamPoi",
+  vars.to.regress = "nCount_Xenium",
+  verbose = TRUE
+)
+
+# Remove 22q11 genes from HVGs
+x22q11_genes <- c(
+  "Ranbp1", "Dgcr8", "Cdc45", "Trmt2a", "Comt",
+  "Tango2", "Mrpl40", "Slc25a1", "Zdhhc8",
+  "Txnrd2", "Hira", "Prodh"
+)
+
+available_22q11 <- intersect(x22q11_genes, VariableFeatures(cluster_2_clean))
+VariableFeatures(cluster_2_clean) <- setdiff(VariableFeatures(cluster_2_clean), available_22q11)
+
+cat("Removed", length(available_22q11), "22q11 genes from HVGs for clustering\n")
+
+# Dimensional reduction & integration
+cluster_2_clean <- RunPCA(cluster_2_clean, npcs = 50, verbose = FALSE)
+ElbowPlot(cluster_2_clean, ndims = 50)
+
+# Calculate suggested PCs
+pca_var <- cluster_2_clean[["pca"]]@stdev^2
+pca_var_perc <- pca_var / sum(pca_var) * 100
+suggested_pcs <- which(cumsum(pca_var_perc) >= 80)[1]
+cat("Suggested PCs for Cluster 2:", suggested_pcs, "\n")
+
+# Run Harmony integration
+cluster_2_clean <- RunHarmony(
+  object = cluster_2_clean,
+  group.by.vars = "animal_id",
+  dims.use = 1:27,
+  verbose = TRUE
+)
+
+# UMAP and clustering
+cluster_2_clean <- RunUMAP(cluster_2_clean, reduction = "harmony", dims = 1:27)
+cluster_2_clean <- FindNeighbors(cluster_2_clean, reduction = "harmony", dims = 1:27)
+cluster_2_clean <- FindClusters(cluster_2_clean, resolution = 0.1)
+
+# Save for downstream use
+cluster_2_clean$genotype  <- factor(cluster_2_clean$genotype)
+cluster_2_clean$animal_id <- factor(cluster_2_clean$animal_id)
+saveRDS(cluster_2_clean, file.path(save.location, "Cluster2_clean_no22q11_SCT_Harmony_res0.1_processed.rds"))
+
+cluster_2_clean <- readRDS(file.path(save.location, "Cluster2_clean_no22q11_SCT_Harmony_res0.1_processed.rds"))
+# Quick check: ensure exclusion worked
+any(x22q11_genes %in% rownames(Loadings(cluster_2_clean[["pca"]])))
+
+```
+  
+```{r # 4. Create Visualizations for Cluster 2}
+# Load the processed Cluster 2 data
+#cluster_2_clean <- readRDS(file.path(save.location, "Cluster2_clean_no22q11_SCT_Harmony_res0.1_processed.rds"))
+
+# Spatial plot showing only Cluster 2 cells
+sp_cluster2 <- ImageDimPlot(
+  cluster_2_clean,
+  group.by = "seurat_clusters",
+  axes = FALSE,
+  size = 0.8
+) + ggtitle("Cluster 2 Cleaned - Spatial Distribution")
+
+ggsave("Cluster2_clean_no22q11_spatial_clusters.pdf", sp_cluster2, width = 10, height = 8)
+
+# Quick QC check
+cat("Original cells:", ncol(all_samples), "\n")
+cat("Cluster 2 cleaned subset:", ncol(cluster_2_clean), "\n") 
+cat("Percentage kept:", round(ncol(cluster_2_clean)/ncol(all_samples)*100, 1), "%\n")
+
+# Verify neuronal markers
+FeaturePlot(cluster_2_clean, features = c("Cux2", "Gad1"), order = TRUE)
+
+# Reorder genotype factor levels
+cluster_2_clean$genotype <- factor(cluster_2_clean$genotype, levels = c("WT", "LD", "LD_NAC", "WT_NAC"))
+
+# Generate violin plot with neuronal markers
+vln_plot_cluster2 <- VlnPlot(cluster_2_clean, 
+                    features = c("Cux1", "Cux2", "Pou3f2", "Rasgrf2", "Bcl11b", "Fezf2", "Foxp2", "Gad1", "Gad2", "Gfap", "Pecam1", "Ppp1r1b"), 
+                    group.by = "genotype", 
+                    pt.size = 0,
+                       cols = c("WT" = "#A6CEE3",        # Pastel blue
+                            "LD" = "#FB9A99",         # Pastel red
+                            "LD_NAC" = "#FDBF6F",     # Pastel orange
+                            "WT_NAC" = "#FFFF99")) +  # Pastel yellow
+  theme(legend.position = "right")
+ggsave("Cluster2_clean_no22q11_violin_plot_markers.pdf", vln_plot_cluster2, width = 16, height = 12, dpi = 300)
+
+
+
+
+# Define your custom color palette for genotypes
+genotype_colors <- c("WT" = "#A6CEE3",        # Pastel blue
+                    "LD" = "#FB9A99",         # Pastel red
+                    "LD_NAC" = "#FDBF6F",     # Pastel orange
+                    "WT_NAC" = "#FFFF99")     # Pastel yellow
+
+# UMAP plots
+p1_cluster2 <- DimPlot(cluster_2_clean, group.by = "animal_id", shuffle = TRUE) + ggtitle("Cluster 2 - By Animal ID")
+p2_cluster2 <- DimPlot(cluster_2_clean, 
+                      group.by = "genotype",
+                      cols = genotype_colors,
+                      pt.size = 0.5) +
+  ggtitle("Cluster 2 - By Genotype")
+p3_cluster2 <- DimPlot(cluster_2_clean, group.by = "seurat_clusters") + ggtitle("Cluster 2 - Clusters")
+p1_cluster2 + p2_cluster2 + p3_cluster2
+
+ggsave("Cluster2_clean_no22q11_umap_animal_id.pdf", p1_cluster2, width = 10, height = 8)
+ggsave("Cluster2_clean_no22q11_umap_genotype.pdf", p2_cluster2, width = 10, height = 8)
+ggsave("Cluster2_clean_no22q11_umap_clusters.pdf", p3_cluster2, width = 10, height = 8)
+
+# Spatial plots
+sp1_cluster2 <- ImageDimPlot(cluster_2_clean, group.by = "seurat_clusters", axes = FALSE) + 
+  ggtitle("Cluster 2 - Spatial Clusters")
+sp2_cluster2 <- ImageDimPlot(cluster_2_clean, group.by = "genotype", axes = FALSE) + 
+  ggtitle("Cluster 2 - Spatial Genotype")
+sp3_cluster2 <- ImageDimPlot(cluster_2_clean, group.by = "animal_id", axes = FALSE) + 
+  ggtitle("Cluster 2 - Spatial Animal ID")
+
+ggsave("Cluster2_clean_no22q11_spatial_animal_id.pdf", sp3_cluster2, width = 10, height = 8)
+ggsave("Cluster2_clean_no22q11_spatial_genotype.pdf", sp2_cluster2, width = 10, height = 8)
+ggsave("Cluster2_clean_no22q11_spatial_clusters.pdf", sp1_cluster2, width = 10, height = 8)
+
+
+# Create UMAP plot showing cleaned Cluster 2 cells in the context of all samples
+p_cluster2_in_context <- DimPlot(all_samples,
+                                group.by = "is_cluster_2_clean",
+                                cols = c("Cluster_2_clean" = "#FF7F00", "Other" = "gray90"),
+                                pt.size = 0.3,
+                                order = c("Cluster_2_clean")) +  # Plot Cluster_2_clean on top
+  ggtitle("Cleaned Cluster 2 Cells in Full Dataset") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+print(p_cluster2_in_context)
+ggsave("Cluster2_clean_in_all_samples_umap.pdf", p_cluster2_in_context, width = 10, height = 8, dpi = 300)
+
+# Alternative: Show both the original cluster 2 and cleaned cluster 2 for comparison
+if ("is_cluster_2" %in% colnames(all_samples@meta.data)) {
+  # Create a combined column showing the progression
+  all_samples$cluster_2_comparison <- case_when(
+    all_samples$is_cluster_2_clean == "Cluster_2_clean" ~ "Cleaned Cluster 2",
+    all_samples$is_cluster_2 == "Cluster_2" ~ "Original Cluster 2 (removed)",
+    TRUE ~ "Other"
+  )
+  
+  p_comparison <- DimPlot(all_samples,
+                         group.by = "cluster_2_comparison",
+                         cols = c("Cleaned Cluster 2" = "#FF7F00", 
+                                 "Original Cluster 2 (removed)" = "#FFA500",  # Lighter orange
+                                 "Other" = "gray90"),
+                         pt.size = 0.3,
+                         order = c("Cleaned Cluster 2", "Original Cluster 2 (removed)")) +
+    ggtitle("Cluster 2: Original vs Cleaned") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  print(p_comparison)
+  ggsave("Cluster2_original_vs_clean_comparison_umap.pdf", p_comparison, width = 10, height = 8, dpi = 300)
+}
+
+# Create a spatial plot showing cleaned Cluster 2 cells in the context of all samples
+p_spatial_context <- ImageDimPlot(all_samples,
+                                 group.by = "is_cluster_2_clean",
+                                 cols = c("Cluster_2_clean" = "#FF7F00", "Other" = "lightgray"),
+                                 axes = FALSE,
+                                 dark.background = FALSE,
+                                 size = 0.4) +
+  ggtitle("Cleaned Cluster 2 Cells - Spatial Distribution in Full Dataset")
+
+print(p_spatial_context)
+ggsave("Cluster2_clean_spatial_in_context.pdf", p_spatial_context, width = 12, height = 8, dpi = 300)
+
+# Optional: Create individual spatial plots for each section
+for (section in Images(all_samples)) {
+  tryCatch({
+    p_section_context <- ImageDimPlot(all_samples,
+                                     fov = section,
+                                     group.by = "is_cluster_2_clean",
+                                     cols = c("Cluster_2_clean" = "#FF7F00", "Other" = "lightgray"),
+                                     axes = FALSE,
+                                     dark.background = FALSE,
+                                     size = 0.5) +
+      ggtitle(paste("Cleaned Cluster 2 -", section))
+    
+    ggsave(paste0("Cluster2_clean_", section, "_spatial_context.pdf"), 
+           p_section_context, width = 10, height = 8, dpi = 300)
+    print(paste("Saved spatial context plot for section:", section))
+  }, error = function(e) {
+    print(paste("Error with section", section, ":", e$message))
+  })
+}
+
+# Print summary statistics
+print("=== CLUSTER 2 CLEANING SUMMARY ===")
+print(paste("Total cells in dataset:", ncol(all_samples)))
+print(paste("Original cluster 2 cells:", sum(all_samples$seurat_clusters == 2)))
+print(paste("Cleaned cluster 2 cells:", sum(all_samples$is_cluster_2_clean == "Cluster_2_clean")))
+print(paste("Cells removed during cleaning:", sum(all_samples$seurat_clusters == 2) - sum(all_samples$is_cluster_2_clean == "Cluster_2_clean")))
+print(paste("Percentage of original cluster 2 kept:", 
+            round(sum(all_samples$is_cluster_2_clean == "Cluster_2_clean") / sum(all_samples$seurat_clusters == 2) * 100, 1), "%"))
+
+# Create a multi-panel figure showing the cleaning process
+library(patchwork)
+
+# If you have the original cluster 2 highlight
+if ("is_cluster_2" %in% colnames(all_samples@meta.data)) {
+  p_original <- DimPlot(all_samples,
+                       group.by = "is_cluster_2",
+                       cols = c("Cluster_2" = "#FFA500", "Other" = "gray90"),
+                       pt.size = 0.3) +
+    ggtitle("Original Cluster 2") +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  p_cleaned <- DimPlot(all_samples,
+                      group.by = "is_cluster_2_clean",
+                      cols = c("Cluster_2_clean" = "#FF7F00", "Other" = "gray90"),
+                      pt.size = 0.3) +
+    ggtitle("Cleaned Cluster 2") +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  combined_plot <- p_original + p_cleaned + 
+    plot_annotation(title = "Cluster 2 Cleaning Process",
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  
+  ggsave("Cluster2_cleaning_process_umap.pdf", combined_plot, width = 16, height = 8, dpi = 300)
+}
+
+```
+  
+```{r # 5. Create PCA and PC Loadings Plots for Cluster 2}
+# Create enhanced PCA plot for Cluster 2
+library(ggplot2)
+library(cowplot)
+
+# Get variance explained for Cluster 2 PCA
+variance_explained_cluster2 <- cluster_2_clean[["pca"]]@stdev^2 / sum(cluster_2_clean[["pca"]]@stdev^2) * 100
+
+# Create clean PCA plot for Cluster 2
+p_pca_cluster2 <- DimPlot(cluster_2_clean,
+                         reduction = "pca",
+                         group.by = "seurat_clusters",
+                         pt.size = 1.5) +
+  xlab(paste0("PC1 (", round(variance_explained_cluster2[1], 1), "% variance)")) +
+  ylab(paste0("PC2 (", round(variance_explained_cluster2[2], 1), "% variance)")) +
+  ggtitle("Cluster 2 - PCA") +
+  theme_cowplot() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        legend.position = "right",
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12))
+
+print(p_pca_cluster2)
+ggsave("Cluster2_clean_PCA.pdf", p_pca_cluster2, width = 8, height = 6, dpi = 300)
+
+# Get PCA loadings for Cluster 2
+pca_loadings_cluster2 <- Loadings(cluster_2_clean, reduction = "pca")[, 1:2]
+top_pc1_cluster2 <- head(pca_loadings_cluster2[order(abs(pca_loadings_cluster2[,1]), decreasing = TRUE), 1], 20)
+top_pc2_cluster2 <- head(pca_loadings_cluster2[order(abs(pca_loadings_cluster2[,2]), decreasing = TRUE), 2], 20)
+
+print("Top genes in PC1 for Cluster 2:")
+print(top_pc1_cluster2)
+
+print("Top genes in PC2 for Cluster 2:")
+print(top_pc2_cluster2)
+
+# Create PCA loadings visualization for Cluster 2
+pc1_genes_cluster2 <- data.frame(
+  gene = names(top_pc1_cluster2)[1:10],
+  loading = top_pc1_cluster2[1:10],
+  pc = "PC1"
+)
+
+pc2_genes_cluster2 <- data.frame(
+  gene = names(top_pc2_cluster2)[1:10],
+  loading = top_pc2_cluster2[1:10],
+  pc = "PC2"
+)
+
+p_loadings_cluster2 <- ggplot(rbind(pc1_genes_cluster2, pc2_genes_cluster2), 
+                             aes(x = reorder(gene, abs(loading)), y = abs(loading), fill = loading > 0)) +
+  geom_col() +
+  facet_wrap(~pc, scales = "free_y") +
+  coord_flip() +
+  labs(x = "Gene", y = "Absolute Loading Value",
+       title = "Cluster 2 - Key Genes Driving Principal Components",
+       subtitle = paste("PC1:", round(variance_explained_cluster2[1], 1), "% variance | PC2:", round(variance_explained_cluster2[2], 1), "% variance")) +
+  scale_fill_manual(values = c("FALSE" = "blue", "TRUE" = "red"),
+                    name = "Direction",
+                    labels = c("Negative", "Positive")) +
+  theme_minimal()
+
+ggsave("Cluster2_clean_PCA_loadings_analysis.pdf", p_loadings_cluster2, width = 12, height = 6, dpi = 300)
+
+```
+
+```{r # 6. Find Subcluster Markers for Cluster 2 Cleaned Subset}
+plan("multisession", workers = 12)
+options(future.globals.maxSize = 150 * 1024^3)
+
+DefaultAssay(cluster_2_clean) <- "Xenium"
+cluster_2_clean <- JoinLayers(cluster_2_clean)
+cluster_2_clean <- NormalizeData(cluster_2_clean, normalization.method = "LogNormalize")
+cluster_2_clean <- ScaleData(cluster_2_clean)
+
+# Find markers with slightly relaxed parameters
+AllMarkers_cluster2 <- FindAllMarkers(
+    cluster_2_clean,
+    assay = "Xenium",
+    only.pos = TRUE,
+    min.pct = 0.25,
+    logfc.threshold = 0.25,
+    test.use = "wilcox"
+)
+
+# save for reference
+write.csv(AllMarkers_cluster2, file.path(save.location, "Cluster2_clean_no22q11_Xenium_FindAllMarkers.csv"), row.names = FALSE)
+```
+
+```{r # 7. DE using FindMarkers for Cluster 2 Cleaned Subset}
+# Set identities to genotype for DE analysis
+Idents(cluster_2_clean) <- "genotype"
+
+# Include animal_id as latent variable to control for batch effects
+de_wt_vs_ld_cluster2 <- FindMarkers(
+  cluster_2_clean,
+  ident.1 = "LD",
+  ident.2 = "WT",
+  latent.vars = "animal_id",
+  min.pct = 0.1,
+  logfc.threshold = 0.1
+)
+
+de_wt_vs_ldnac_cluster2 <- FindMarkers(
+  cluster_2_clean,
+  ident.1 = "LD_NAC",
+  ident.2 = "WT",
+  latent.vars = "animal_id",
+  min.pct = 0.1,
+  logfc.threshold = 0.1
+)
+
+de_ld_vs_ldnac_cluster2 <- FindMarkers(
+  cluster_2_clean,
+  ident.1 = "LD_NAC",
+  ident.2 = "LD",
+  latent.vars = "animal_id",
+  min.pct = 0.1,
+  logfc.threshold = 0.1
+)
+
+de_wt_vs_wtnac_cluster2 <- FindMarkers(
+  cluster_2_clean,
+  ident.1 = "WT_NAC",
+  ident.2 = "WT",
+  latent.vars = "animal_id",
+  min.pct = 0.1,
+  logfc.threshold = 0.1
+)
+
+de_wtnac_vs_ldnac_cluster2 <- FindMarkers(
+  cluster_2_clean,
+  ident.1 = "LD_NAC",
+  ident.2 = "WT_NAC",
+  latent.vars = "animal_id",
+  min.pct = 0.1,
+  logfc.threshold = 0.1
+)
+
+# Save all DE results
+write.csv(de_wt_vs_ld_cluster2, "Cluster2_clean_WT_vs_LD_DE_Findmarkers.csv")
+write.csv(de_wt_vs_ldnac_cluster2, "Cluster2_clean_WT_vs_LDNAC_DE_Findmarkers.csv")
+write.csv(de_ld_vs_ldnac_cluster2, "Cluster2_clean_LD_vs_LDNAC_DE_Findmarkers.csv")
+write.csv(de_wt_vs_wtnac_cluster2, "Cluster2_clean_WT_vs_WTNAC_DE_Findmarkers.csv")
+write.csv(de_wtnac_vs_ldnac_cluster2, "Cluster2_clean_WTNAC_vs_LDNAC_DE_Findmarkers.csv")
+
+```
+
+```{r # 8. Volcano Plots for Cluster 2 Cleaned DE Analysis}
+
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+# Define the create_volcano function for Cluster 2
+create_volcano <- function(de_results, title, p_cutoff = 0.05, fc_cutoff = 0.25) {
+  # Prepare data
+  volcano_data <- de_results %>%
+    mutate(
+      gene = rownames(.),
+      log10_pval = -log10(p_val_adj),
+      significance = case_when(
+        p_val_adj < p_cutoff & avg_log2FC > fc_cutoff ~ "Up",
+        p_val_adj < p_cutoff & avg_log2FC < -fc_cutoff ~ "Down", 
+        TRUE ~ "Not significant"
+      )
+    )
+  
+  # Get top genes for labeling
+  top_genes <- volcano_data %>%
+    filter(significance != "Not significant") %>%
+    arrange(p_val_adj) %>%
+    head(10)
+  
+  # Create plot
+  p <- ggplot(volcano_data, aes(x = avg_log2FC, y = log10_pval, color = significance)) +
+    geom_point(alpha = 0.7, size = 1.5) +
+    geom_hline(yintercept = -log10(p_cutoff), linetype = "dashed", color = "gray50") +
+    geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed", color = "gray50") +
+    geom_text_repel(
+      data = top_genes,
+      aes(label = gene),
+      size = 3,
+      max.overlaps = 20,
+      box.padding = 0.5,
+      segment.color = "gray50"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "#E31A1C",
+        "Down" = "#1F78B4", 
+        "Not significant" = "gray70"
+      )
+    ) +
+    labs(
+      title = title,
+      x = "Log2 Fold Change",
+      y = "-Log10 Adjusted P-value"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9),
+      legend.position = "bottom",
+      legend.title = element_blank()
+    )
+  
+  return(p)
+}
+
+# Create and save each volcano plot for Cluster 2
+p1_cluster2 <- create_volcano(de_wt_vs_ld_cluster2, "LD vs WT in Cluster 2")
+p2_cluster2 <- create_volcano(de_wt_vs_ldnac_cluster2, "LD_NAC vs WT in Cluster 2")
+p3_cluster2 <- create_volcano(de_ld_vs_ldnac_cluster2, "LD_NAC vs LD in Cluster 2")
+p4_cluster2 <- create_volcano(de_wt_vs_wtnac_cluster2, "WT_NAC vs WT in Cluster 2")
+p5_cluster2 <- create_volcano(de_wtnac_vs_ldnac_cluster2, "LD_NAC vs WT_NAC in Cluster 2")
+
+# Save individual plots
+ggsave("Cluster2_clean_volcano_LD_vs_WT_FindMarkers.pdf", p1_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_LDNAC_vs_WT_FindMarkers.pdf", p2_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_LDNAC_vs_LD_FindMarkers.pdf", p3_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_WTNAC_vs_WT_FindMarkers.pdf", p4_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_LDNAC_vs_WTNAC_FindMarkers.pdf", p5_cluster2, width = 8, height = 10, dpi = 300)
+
+# Print confirmation
+print("Cluster 2 volcano plots created and saved successfully!")
+
+```
+
+```{r # 9. ANOVA on Individual Gene for Cluster 2 Cleaned}
+gene <- "Txnrd2"  # change if needed
+
+# make sure we're using Xenium counts
+DefaultAssay(cluster_2_clean) <- "Xenium"
+cluster_2_clean <- JoinLayers(cluster_2_clean)
+Idents(cluster_2_clean) <- "genotype"
+
+# check gene exists
+if (!gene %in% rownames(cluster_2_clean)) stop(paste("Gene not in panel:", gene))
+
+# pull per-cell expression + metadata
+df_cluster2 <- data.frame(
+  expr = as.numeric(GetAssayData(cluster_2_clean, slot = "counts")[gene, colnames(cluster_2_clean)]),
+  animal_id = cluster_2_clean$animal_id,
+  genotype  = cluster_2_clean$genotype
+)
+
+# per-animal means
+rep_means_cluster2 <- df_cluster2 %>%
+  group_by(genotype, animal_id) %>%
+  summarize(mean_expr = mean(expr, na.rm = TRUE), .groups = "drop")
+
+# group summary for plotting
+grp_sum_cluster2 <- rep_means_cluster2 %>%
+  group_by(genotype) %>%
+  summarize(
+    mean = mean(mean_expr),
+    se   = sd(mean_expr) / sqrt(n()),
+    n    = n(), .groups = "drop"
+  )
+
+# ANOVA + Tukey
+fit_cluster2 <- aov(mean_expr ~ genotype, data = rep_means_cluster2)
+anova_res_cluster2 <- summary(fit_cluster2)
+tukey_res_cluster2 <- TukeyHSD(fit_cluster2)
+
+print("Cluster 2 ANOVA results:")
+print(anova_res_cluster2)
+print("Cluster 2 Tukey results:")
+print(tukey_res_cluster2)
+
+# Plot with consistent genotype colors
+ggplot(rep_means_cluster2, aes(x = genotype, y = mean_expr)) +
+  geom_jitter(width = 0.12, height = 0, size = 2, alpha = 0.8) +
+  geom_errorbar(
+    data = grp_sum_cluster2,
+    aes(x = genotype, y = mean, ymin = mean - se, ymax = mean + se),
+    width = 0.2,
+    inherit.aes = FALSE
+  ) +
+  geom_point(
+    data = grp_sum_cluster2,
+    aes(x = genotype, y = mean),
+    size = 3,
+    inherit.aes = FALSE
+  ) +
+  scale_fill_manual(values = genotype_colors) +
+  labs(
+    title = paste(gene, "per-animal mean (Cluster 2)"),
+    y = "mean counts per cell",
+    x = "genotype"
+  ) +
+  theme_classic()
+
+```
+
+```{r # 10. DE Analysis with Count Aggregate in DESeq2 for Cluster 2}
+pb_cluster2 <- AggregateExpression(
+  cluster_2_clean,
+  assays = "Xenium",
+  group.by = c("genotype", "animal_id"),
+  slot = "counts"
+)
+counts_cluster2 <- pb_cluster2$Xenium
+
+meta_cluster2 <- data.frame(
+  genotype  = sub("_.*", "", colnames(counts_cluster2)),
+  animal_id = sub("^[^_]*_", "", colnames(counts_cluster2))
+)
+meta_cluster2$genotype  <- gsub("-", "_", meta_cluster2$genotype)
+meta_cluster2$animal_id <- gsub("-", "_", meta_cluster2$animal_id)
+
+meta_cluster2$genotype <- factor(meta_cluster2$genotype, levels = c("WT", "LD", "LD_NAC", "WT_NAC"))
+
+dds_cluster2 <- DESeqDataSetFromMatrix(
+  countData = round(counts_cluster2),
+  colData = meta_cluster2,
+  design = ~ genotype
+)
+
+dds_cluster2 <- DESeq(dds_cluster2)
+
+resultsNames(dds_cluster2)
+
+res_LD_vs_WT_cluster2      <- results(dds_cluster2, name = "genotype_LD_vs_WT")
+res_LD_NAC_vs_WT_cluster2  <- results(dds_cluster2, name = "genotype_LD_NAC_vs_WT")
+res_WT_NAC_vs_WT_cluster2  <- results(dds_cluster2, name = "genotype_WT_NAC_vs_WT")
+
+# for non-reference contrasts
+res_LD_NAC_vs_LD_cluster2  <- results(dds_cluster2, contrast = c("genotype", "LD_NAC", "LD"))
+res_WT_NAC_vs_LD_NAC_cluster2 <- results(dds_cluster2, contrast = c("genotype", "WT_NAC", "LD_NAC"))
+
+write.csv(as.data.frame(res_LD_vs_WT_cluster2),      file.path(save.location, "Cluster2_clean_DESeq2_LD_vs_WT.csv"))
+write.csv(as.data.frame(res_LD_NAC_vs_WT_cluster2),  file.path(save.location, "Cluster2_clean_DESeq2_LD_NAC_vs_WT.csv"))
+write.csv(as.data.frame(res_WT_NAC_vs_WT_cluster2),  file.path(save.location, "Cluster2_clean_DESeq2_WT_NAC_vs_WT.csv"))
+write.csv(as.data.frame(res_LD_NAC_vs_LD_cluster2),  file.path(save.location, "Cluster2_clean_DESeq2_LD_NAC_vs_LD.csv"))
+write.csv(as.data.frame(res_WT_NAC_vs_LD_NAC_cluster2), file.path(save.location, "Cluster2_clean_DESeq2_WT_NAC_vs_LD_NAC.csv"))
+
+# DESeq2 volcano plots
+volcano(res_LD_vs_WT_cluster2, "res_LD_vs_WT_cluster2")
+volcano(res_LD_NAC_vs_WT_cluster2, "Cluster 2: LD_NAC vs WT")
+volcano(res_WT_NAC_vs_WT_cluster2, "Cluster 2: WT_NAC vs WT")
+
+# Create and save each volcano plot for Cluster 2
+p1_cluster2 <- create_volcano(de_wt_vs_ld_cluster2, "res_LD_vs_WT_cluster2")
+p2_cluster2 <- create_volcano(de_wt_vs_ldnac_cluster2, "res_LD_NAC_vs_WT_cluster2")
+p3_cluster2 <- create_volcano(de_ld_vs_ldnac_cluster2, "res_LD_NAC_vs_LD_cluster2")
+p4_cluster2 <- create_volcano(de_wt_vs_wtnac_cluster2, "res_WT_NAC_vs_WT_cluster2")
+p5_cluster2 <- create_volcano(de_wtnac_vs_ldnac_cluster2, "res_WT_NAC_vs_LD_NAC_cluster2")
+
+# Save individual plots
+ggsave("Cluster2_clean_volcano_LD_vs_WT_DESeq2.pdf", p1_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_LDNAC_vs_WT_DESeq2.pdf", p2_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_LDNAC_vs_LD_DESeq2.pdf", p3_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_WTNAC_vs_WT_DESeq2.pdf", p4_cluster2, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_volcano_LDNAC_vs_WTNAC_DESeq2.pdf", p5_cluster2, width = 8, height = 10, dpi = 300)
+
+# Print confirmation
+print("Cluster 2 volcano plots created and saved successfully!")
+
+
+```
+
+```{r # 11. DE Analysis with Count Aggregate in Limma for Cluster 2}
+
+pb_cluster2_limma <- AggregateExpression(
+  cluster_2_clean,
+  assays = "SCT",
+  group.by = c("genotype", "animal_id"),
+  slot = "data"
+)
+
+pb_mat_cluster2 <- pb_cluster2_limma$SCT
+meta_cluster2_limma <- as.data.frame(do.call(rbind, strsplit(colnames(pb_mat_cluster2), "_")))
+colnames(meta_cluster2_limma) <- c("genotype", "animal_id")
+
+meta_cluster2_limma$genotype <- gsub("-", "_", meta_cluster2_limma$genotype)
+meta_cluster2_limma$genotype <- factor(meta_cluster2_limma$genotype)
+
+design_cluster2 <- model.matrix(~0 + genotype, data = meta_cluster2_limma)
+colnames(design_cluster2) <- levels(meta_cluster2_limma$genotype)
+
+contr_cluster2 <- makeContrasts(
+  WT_vs_LD     = WT - LD,
+  WT_vs_LD_NAC = WT - LD_NAC,
+  LD_vs_LD_NAC = LD - LD_NAC,
+  WT_vs_WT_NAC = WT - WT_NAC,
+  WT_NAC_vs_LD_NAC = WT_NAC - LD_NAC,
+  levels = design_cluster2
+)
+
+fit_cluster2_limma <- lmFit(pb_mat_cluster2, design_cluster2)
+fit2_cluster2 <- contrasts.fit(fit_cluster2_limma, contr_cluster2)
+fit2_cluster2 <- eBayes(fit2_cluster2)
+
+res_WT_vs_LD_cluster2      <- topTable(fit2_cluster2, coef = "WT_vs_LD", n = Inf)
+res_WT_vs_LD_NAC_cluster2  <- topTable(fit2_cluster2, coef = "WT_vs_LD_NAC", n = Inf)
+res_LD_vs_LD_NAC_cluster2  <- topTable(fit2_cluster2, coef = "LD_vs_LD_NAC", n = Inf)
+res_WT_vs_WT_NAC_cluster2  <- topTable(fit2_cluster2, coef = "WT_vs_WT_NAC", n = Inf)
+res_WT_NAC_vs_LD_NAC_cluster2 <- topTable(fit2_cluster2, coef = "WT_NAC_vs_LD_NAC", n = Inf)
+
+write.csv(res_WT_vs_LD_cluster2, file.path(save.location, "Cluster2_clean_limma_WT_vs_LD.csv"))
+write.csv(res_WT_vs_LD_NAC_cluster2, file.path(save.location, "Cluster2_clean_limma_WT_vs_LD_NAC.csv"))
+write.csv(res_LD_vs_LD_NAC_cluster2, file.path(save.location, "Cluster2_clean_limma_LD_vs_LD_NAC.csv"))
+write.csv(res_WT_vs_WT_NAC_cluster2, file.path(save.location, "Cluster2_clean_limma_WT_vs_WT_NAC.csv"))
+write.csv(res_WT_NAC_vs_LD_NAC_cluster2, file.path(save.location, "Cluster2_clean_limma_WT_NAC_vs_LD_NAC.csv"))
+
+
+# Create and save each volcano plot for Cluster 2 (limma results)
+# Define a volcano function specifically for limma results
+create_volcano_limma <- function(limma_results, title, p_cutoff = 0.05, fc_cutoff = 0.25) {
+  # Prepare data
+  volcano_data <- limma_results %>%
+    mutate(
+      gene = rownames(.),
+      log10_pval = -log10(adj.P.Val),
+      significance = case_when(
+        adj.P.Val < p_cutoff & logFC > fc_cutoff ~ "Up",
+        adj.P.Val < p_cutoff & logFC < -fc_cutoff ~ "Down", 
+        TRUE ~ "Not significant"
+      )
+    )
+  
+  # Get top genes for labeling
+  top_genes <- volcano_data %>%
+    filter(significance != "Not significant") %>%
+    arrange(adj.P.Val) %>%
+    head(10)
+  
+  # Create plot
+  p <- ggplot(volcano_data, aes(x = logFC, y = log10_pval, color = significance)) +
+    geom_point(alpha = 0.7, size = 1.5) +
+    geom_hline(yintercept = -log10(p_cutoff), linetype = "dashed", color = "gray50") +
+    geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed", color = "gray50") +
+    geom_text_repel(
+      data = top_genes,
+      aes(label = gene),
+      size = 3,
+      max.overlaps = 20,
+      box.padding = 0.5,
+      segment.color = "gray50"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "#E31A1C",
+        "Down" = "#1F78B4", 
+        "Not significant" = "gray70"
+      )
+    ) +
+    labs(
+      title = title,
+      x = "Log2 Fold Change",
+      y = "-Log10 Adjusted P-value"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9),
+      legend.position = "bottom",
+      legend.title = element_blank()
+    )
+  
+  return(p)
+}
+
+# Create and save each volcano plot for Cluster 2 limma results
+p1_cluster2_limma <- create_volcano_limma(res_WT_vs_LD_cluster2, "LD vs WT in Cluster 2 (limma)")
+p2_cluster2_limma <- create_volcano_limma(res_WT_vs_LD_NAC_cluster2, "LD_NAC vs WT in Cluster 2 (limma)")
+p3_cluster2_limma <- create_volcano_limma(res_LD_vs_LD_NAC_cluster2, "LD_NAC vs LD in Cluster 2 (limma)")
+p4_cluster2_limma <- create_volcano_limma(res_WT_vs_WT_NAC_cluster2, "WT_NAC vs WT in Cluster 2 (limma)")
+p5_cluster2_limma <- create_volcano_limma(res_WT_NAC_vs_LD_NAC_cluster2, "LD_NAC vs WT_NAC in Cluster 2 (limma)")
+
+# Save individual plots
+ggsave("Cluster2_clean_limma_volcano_LD_vs_WT.pdf", p1_cluster2_limma, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_limma_volcano_LDNAC_vs_WT.pdf", p2_cluster2_limma, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_limma_volcano_LDNAC_vs_LD.pdf", p3_cluster2_limma, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_limma_volcano_WTNAC_vs_WT.pdf", p4_cluster2_limma, width = 8, height = 10, dpi = 300)
+ggsave("Cluster2_clean_limma_volcano_LDNAC_vs_WTNAC.pdf", p5_cluster2_limma, width = 8, height = 10, dpi = 300)
+
+```
+
+```{r # 12. DE Analysis with Count Aggregate in EdgeR for Cluster 2}
+DefaultAssay(cluster_2_clean) <- "Xenium"
+cluster_2_clean <- JoinLayers(cluster_2_clean)
+
+cell_meta_cluster2 <- cluster_2_clean@meta.data[, c("genotype","animal_id")]
+cell_meta_cluster2$cell <- rownames(cell_meta_cluster2)
+
+X_cluster2 <- GetAssayData(cluster_2_clean, slot = "counts")
+rep_keys_cluster2 <- paste(cell_meta_cluster2$genotype, cell_meta_cluster2$animal_id, sep = "__")
+
+pb_mat_cluster2_edgeR <- rowsum(t(as.matrix(X_cluster2)), group = rep_keys_cluster2)
+pb_mat_cluster2_edgeR <- t(pb_mat_cluster2_edgeR)
+
+parts_cluster2 <- do.call(rbind, strsplit(colnames(pb_mat_cluster2_edgeR), "__"))
+coldata_cluster2 <- data.frame(
+  replicate = colnames(pb_mat_cluster2_edgeR),
+  genotype  = factor(parts_cluster2[,1], levels = c("WT","LD","WT_NAC","LD_NAC")),
+  animal_id = parts_cluster2[,2]
+)
+
+y_cluster2 <- DGEList(counts = pb_mat_cluster2_edgeR, samples = coldata_cluster2)
+y_cluster2 <- calcNormFactors(y_cluster2, method = "TMM")
+
+design_cluster2_edgeR <- model.matrix(~ 0 + genotype, data = y_cluster2$samples)
+colnames(design_cluster2_edgeR) <- levels(coldata_cluster2$genotype)
+
+y_cluster2 <- estimateDisp(y_cluster2, design_cluster2_edgeR)
+fit_cluster2_edgeR <- glmQLFit(y_cluster2, design_cluster2_edgeR)
+
+ct_WT_vs_LD_cluster2      <- makeContrasts(LD - WT, levels = design_cluster2_edgeR)
+ct_WT_vs_LD_NAC_cluster2  <- makeContrasts(LD_NAC - WT, levels = design_cluster2_edgeR)
+ct_LD_vs_LD_NAC_cluster2  <- makeContrasts(LD_NAC - LD, levels = design_cluster2_edgeR)
+ct_WT_vs_WT_NAC_cluster2  <- makeContrasts(WT_NAC - WT, levels = design_cluster2_edgeR)
+ct_WT_NAC_vs_LD_NAC_cluster2  <- makeContrasts(LD_NAC - WT_NAC, levels = design_cluster2_edgeR)
+
+res_WT_vs_LD_cluster2_edgeR     <- glmQLFTest(fit_cluster2_edgeR, contrast = ct_WT_vs_LD_cluster2)
+res_WT_vs_LD_NAC_cluster2_edgeR <- glmQLFTest(fit_cluster2_edgeR, contrast = ct_WT_vs_LD_NAC_cluster2)
+res_LD_vs_LD_NAC_cluster2_edgeR <- glmQLFTest(fit_cluster2_edgeR, contrast = ct_LD_vs_LD_NAC_cluster2)
+res_WT_vs_WT_NAC_cluster2_edgeR <- glmQLFTest(fit_cluster2_edgeR, contrast = ct_WT_vs_WT_NAC_cluster2)
+res_WT_NAC_vs_LD_NAC_cluster2_edgeR <- glmQLFTest(fit_cluster2_edgeR, contrast = ct_WT_NAC_vs_LD_NAC_cluster2)
+
+tab_WT_vs_LD_cluster2     <- topTags(res_WT_vs_LD_cluster2_edgeR, n = Inf)$table
+tab_WT_vs_LD_NAC_cluster2 <- topTags(res_WT_vs_LD_NAC_cluster2_edgeR, n = Inf)$table
+tab_LD_vs_LD_NAC_cluster2 <- topTags(res_LD_vs_LD_NAC_cluster2_edgeR, n = Inf)$table
+tab_WT_vs_WT_NAC_cluster2 <- topTags(res_WT_vs_WT_NAC_cluster2_edgeR, n = Inf)$table
+tab_WT_NAC_vs_LD_NAC_cluster2 <- topTags(res_WT_NAC_vs_LD_NAC_cluster2_edgeR, n = Inf)$table
+
+
+# Define the add_gene function for EdgeR results
+add_gene <- function(df) { 
+  df$gene <- rownames(df); 
+  df[, c("gene", colnames(df)[colnames(df)!="gene"])] 
+}
+
+# Now apply the function to all EdgeR tables
+tab_WT_vs_LD_cluster2     <- add_gene(tab_WT_vs_LD_cluster2)
+tab_WT_vs_LD_NAC_cluster2 <- add_gene(tab_WT_vs_LD_NAC_cluster2)
+tab_LD_vs_LD_NAC_cluster2 <- add_gene(tab_LD_vs_LD_NAC_cluster2)
+tab_WT_vs_WT_NAC_cluster2 <- add_gene(tab_WT_vs_WT_NAC_cluster2)
+tab_WT_NAC_vs_LD_NAC_cluster2 <- add_gene(tab_WT_NAC_vs_LD_NAC_cluster2)
+
+# Save the results
+write.csv(tab_WT_vs_LD_cluster2, file.path(save.location, "Cluster2_clean_edgeR_WT_vs_LD.csv"), row.names = FALSE)
+write.csv(tab_WT_vs_LD_NAC_cluster2, file.path(save.location, "Cluster2_clean_edgeR_WT_vs_LD_NAC.csv"), row.names = FALSE)
+write.csv(tab_LD_vs_LD_NAC_cluster2, file.path(save.location, "Cluster2_clean_edgeR_LD_vs_LD_NAC.csv"), row.names = FALSE)
+write.csv(tab_WT_vs_WT_NAC_cluster2, file.path(save.location, "Cluster2_clean_edgeR_WT_vs_WT_NAC.csv"), row.names = FALSE)
+write.csv(tab_WT_NAC_vs_LD_NAC_cluster2, file.path(save.location, "Cluster2_clean_edgeR_WT_NAC_vs_LD_NAC.csv"), row.names = FALSE)
+
+
+# Define volcano function for EdgeR results
+volcano <- function(df, lfc = "logFC", p = "PValue", gene = "gene", fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  df$signif <- with(df, ifelse(FDR < fdr_cut & abs(get(lfc)) >= lfc_cut, "sig", "ns"))
+  
+  p <- ggplot(df, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = signif)) +
+    geom_point(alpha = 0.7, size = 1) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2) +
+    scale_color_manual(values = c(ns = "grey70", sig = "red3")) +
+    labs(title = title, x = "log2 fold-change", y = "-log10(p)") +
+    theme_classic()
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2)
+  } else {
+    warning("Could not calculate p-value cutoff for FDR = ", fdr_cut, 
+            ". No horizontal line drawn.")
+  }
+  
+  return(p)
+}
+
+# Helper function to calculate p-value cutoff for a given FDR threshold
+calculate_pvalue_cutoff <- function(df, p = "PValue", fdr = "FDR", fdr_cut = 0.05) {
+  # Check if required columns exist
+  if (!p %in% names(df) || !fdr %in% names(df)) {
+    warning("Required columns not found in data frame")
+    return(NA)
+  }
+  
+  # Get p-values and FDR values
+  pvals <- df[[p]]
+  fdrs <- df[[fdr]]
+  
+  # Filter to significant hits at the given FDR cutoff
+  sig_idx <- which(fdrs < fdr_cut)
+  
+  if (length(sig_idx) == 0) {
+    # No significant hits, return NA
+    return(NA)
+  }
+  
+  # Find the maximum p-value among significant hits
+  # This represents the p-value cutoff that would give us exactly these significant hits
+  p_cut <- max(pvals[sig_idx], na.rm = TRUE)
+  
+  return(p_cut)
+}
+
+# Create a list of plots
+plots_cluster2 <- list(
+  volcano(tab_WT_vs_LD_cluster2, title = "Cluster 2: WT vs LD"),
+  volcano(tab_WT_vs_LD_NAC_cluster2, title = "Cluster 2: WT vs LD_NAC"),
+  volcano(tab_LD_vs_LD_NAC_cluster2, title = "Cluster 2: LD vs LD_NAC"),
+  volcano(tab_WT_vs_WT_NAC_cluster2, title = "Cluster 2: WT vs WT_NAC"),
+  volcano(tab_WT_NAC_vs_LD_NAC_cluster2, title = "Cluster 2: WT_NAC vs LD_NAC")
+)
+
+# Save as multi-page PDF
+ggsave("Cluster2_clean_edgeR_volcano_plots.pdf", 
+       plot = gridExtra::marrangeGrob(plots_cluster2, nrow = 1, ncol = 1), 
+       width = 8.5, height = 11, device = "pdf")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Define volcano function for EdgeR results with 22q11 gene highlighting
+volcano <- function(df, lfc = "logFC", p = "PValue", gene = "gene", fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  # Define 22q11 genes
+  x22q11_genes <- c("Ranbp1", "Dgcr8", "Cdc45", "Trmt2a", "Comt", "Tango2", "Mrpl40", 
+                    "Slc25a1", "Zdhhc8", "Txnrd2", "Hira", "Prodh")
+  
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  # Create significance and 22q11 annotation
+  df <- df %>%
+    mutate(
+      signif = case_when(
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut & gene %in% x22q11_genes ~ "22q11_sig",
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "sig",
+        TRUE ~ "ns"
+      ),
+      # Create a label column for 22q11 genes
+      label = ifelse(gene %in% x22q11_genes & signif != "ns", gene, "")
+    )
+  
+  # Create the plot
+  p <- ggplot(df, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = signif)) +
+    geom_point(alpha = 0.7, size = 1) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "gray50") +
+    # Add labels for 22q11 genes
+    geom_text_repel(
+      aes(label = label),
+      size = 3,
+      color = "darkgreen",
+      fontface = "bold",
+      max.overlaps = 20,
+      box.padding = 0.5,
+      segment.color = "darkgreen",
+      segment.size = 0.5
+    ) +
+    scale_color_manual(
+      values = c(
+        "22q11_sig" = "darkgreen",  # 22q11 genes that are significant
+        "sig" = "red3",             # Other significant genes
+        "ns" = "grey70"             # Not significant
+      ),
+      labels = c("22q11 Significant", "Other Significant", "Not significant")
+    ) +
+    labs(title = title, x = "log2 fold-change", y = "-log10(p)") +
+    theme_classic() +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank()
+    )
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "gray50")
+  } else {
+    warning("Could not calculate p-value cutoff for FDR = ", fdr_cut, 
+            ". No horizontal line drawn.")
+  }
+  
+  return(p)
+}
+
+# Alternative version with different styling for 22q11 genes
+volcano_22q11_highlight <- function(df, lfc = "logFC", p = "PValue", gene = "gene", 
+                                   fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  # Define 22q11 genes
+  x22q11_genes <- c("Ranbp1", "Dgcr8", "Cdc45", "Trmt2a", "Comt", "Tango2", "Mrpl40", 
+                    "Slc25a1", "Zdhhc8", "Txnrd2", "Hira", "Prodh")
+  
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  # Create significance categories
+  df <- df %>%
+    mutate(
+      category = case_when(
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut & gene %in% x22q11_genes ~ "22q11 Significant",
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Other Significant",
+        TRUE ~ "Not significant"
+      ),
+      # Create a label column for 22q11 genes
+      label = ifelse(gene %in% x22q11_genes & category != "Not significant", gene, "")
+    )
+  
+  # Create the plot
+  p <- ggplot(df, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = category, size = category)) +
+    geom_point(alpha = 0.7) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "gray50") +
+    # Add labels for 22q11 genes
+    geom_text_repel(
+      aes(label = label),
+      size = 3.5,
+      color = "darkgreen",
+      fontface = "bold",
+      max.overlaps = 20,
+      box.padding = 0.5,
+      segment.color = "darkgreen",
+      segment.size = 0.5,
+      min.segment.length = 0
+    ) +
+    scale_color_manual(
+      values = c(
+        "22q11 Significant" = "darkgreen",
+        "Other Significant" = "red3",
+        "Not significant" = "grey70"
+      )
+    ) +
+    scale_size_manual(
+      values = c(
+        "22q11 Significant" = 2,
+        "Other Significant" = 1.5,
+        "Not significant" = 1
+      )
+    ) +
+    labs(title = title, x = "log2 fold-change", y = "-log10(p-value)") +
+    theme_classic() +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    )
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "gray50")
+  }
+  
+  return(p)
+}
+
+# Create a list of plots with 22q11 highlighting
+plots_cluster2 <- list(
+  volcano_22q11_highlight(tab_WT_vs_LD_cluster2, title = "Cluster 2: WT vs LD"),
+  volcano_22q11_highlight(tab_WT_vs_LD_NAC_cluster2, title = "Cluster 2: WT vs LD_NAC"),
+  volcano_22q11_highlight(tab_LD_vs_LD_NAC_cluster2, title = "Cluster 2: LD vs LD_NAC"),
+  volcano_22q11_highlight(tab_WT_vs_WT_NAC_cluster2, title = "Cluster 2: WT vs WT_NAC"),
+  volcano_22q11_highlight(tab_WT_NAC_vs_LD_NAC_cluster2, title = "Cluster 2: WT_NAC vs LD_NAC")
+)
+
+# Save as multi-page PDF
+ggsave("Cluster2_clean_edgeR_volcano_plots_22q11_highlighted.pdf", 
+       plot = gridExtra::marrangeGrob(plots_cluster2, nrow = 1, ncol = 1), 
+       width = 8.5, height = 11, device = "pdf")
+
+# Also save individual plots for easier viewing
+for (i in 1:length(plots_cluster2)) {
+  comparison_name <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")[i]
+  ggsave(paste0("Cluster2_clean_edgeR_volcano_", comparison_name, "_22q11_highlighted.pdf"), 
+         plots_cluster2[[i]], width = 8, height = 6, dpi = 300)
+}
+
+# Print summary of 22q11 gene significance
+print("22q11 Gene Significance Summary:")
+for (i in 1:length(plots_cluster2)) {
+  comparison_name <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")[i]
+  df_list <- list(tab_WT_vs_LD_cluster2, tab_WT_vs_LD_NAC_cluster2, tab_LD_vs_LD_NAC_cluster2, 
+                  tab_WT_vs_WT_NAC_cluster2, tab_WT_NAC_vs_LD_NAC_cluster2)
+  current_df <- df_list[[i]]
+  
+  sig_22q11 <- current_df %>%
+    filter(gene %in% x22q11_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  print(paste(comparison_name, ":", nrow(sig_22q11), "significant 22q11 genes"))
+  if (nrow(sig_22q11) > 0) {
+    print(sig_22q11 %>% select(gene, logFC, FDR))
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# LD_NAC specific genes
+LD_NAC_specific_genes <- c(
+  "Wif1", "Npas4", "Rgs2", "Lgi2", "Slitrk6", "Nr4a2", "Rcan2", "Adcyap1", 
+  "Nap1l5", "Omg", "Grm2", "Hdac9", "Osbpl3", "Spock3", "Aox1", 
+  "Srxn1", "Sidt1", "Ngef", "Osgin1", "Hcn1", "Egr1"
+)
+
+# LD specific genes  
+LD_specific_genes <- c(
+  "Gucy1a2", "Vps13c", "Mirg", "Nyap2", "Pclo", "Lnpep", "Atm", "Proser1", 
+  "B9d2"
+)
+
+# Print confirmation
+print(paste("LD_NAC_specific_genes:", length(LD_NAC_specific_genes), "genes"))
+print(paste("LD_specific_genes:", length(LD_specific_genes), "genes"))
+
+# Define volcano function for EdgeR results with two gene set highlighting
+volcano_two_sets <- function(df, lfc = "logFC", p = "PValue", gene = "gene", 
+                            fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  # Create gene set categories
+  df <- df %>%
+    mutate(
+      gene_set = case_when(
+        gene %in% LD_specific_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "LD Specific",
+        gene %in% LD_NAC_specific_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "LD_NAC Specific",
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Other Significant",
+        TRUE ~ "Not significant"
+      ),
+      # Create label column
+      label = case_when(
+        gene_set == "LD Specific" ~ gene,
+        gene_set == "LD_NAC Specific" ~ gene,
+        TRUE ~ ""
+      )
+    )
+  
+  # Create the plot
+  p <- ggplot(df, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = gene_set, size = gene_set)) +
+    geom_point(alpha = 0.7) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "gray50") +
+    # Add labels for both gene sets
+    geom_text_repel(
+      aes(label = label, color = gene_set),
+      size = 3.2,
+      fontface = "bold",
+      max.overlaps = 30,
+      box.padding = 0.6,
+      segment.size = 0.5,
+      min.segment.length = 0,
+      show.legend = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "LD Specific" = "darkcyan",
+        "LD_NAC Specific" = "darkmagenta",
+        "Other Significant" = "red3",
+        "Not significant" = "grey70"
+      )
+    ) +
+    scale_size_manual(
+      values = c(
+        "LD Specific" = 2,
+        "LD_NAC Specific" = 2,
+        "Other Significant" = 1.5,
+        "Not significant" = 1
+      )
+    ) +
+    labs(
+      title = title, 
+      x = "log2 fold-change", 
+      y = "-log10(p-value)"
+    ) +
+    theme_classic() +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9)
+    ) +
+    # Ensure symmetrical x-axis
+    expand_limits(x = symmetric_limits(df[[lfc]]))
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "gray50")
+  }
+  
+  return(p)
+}
+
+# Create a list of plots with two gene set highlighting
+plots_cluster2_two_sets <- list(
+  volcano_two_sets(tab_WT_vs_LD_cluster2, title = "Cluster 2: WT vs LD"),
+  volcano_two_sets(tab_WT_vs_LD_NAC_cluster2, title = "Cluster 2: WT vs LD_NAC"),
+  volcano_two_sets(tab_LD_vs_LD_NAC_cluster2, title = "Cluster 2: LD vs LD_NAC"),
+  volcano_two_sets(tab_WT_vs_WT_NAC_cluster2, title = "Cluster 2: WT vs WT_NAC"),
+  volcano_two_sets(tab_WT_NAC_vs_LD_NAC_cluster2, title = "Cluster 2: WT_NAC vs LD_NAC")
+)
+
+# Save as multi-page PDF
+ggsave("Cluster2_clean_edgeR_volcano_plots_two_sets.pdf", 
+       plot = gridExtra::marrangeGrob(plots_cluster2_two_sets, nrow = 1, ncol = 1), 
+       width = 9, height = 11, device = "pdf")
+
+# Also save individual plots for easier viewing
+for (i in 1:length(plots_cluster2_two_sets)) {
+  comparison_name <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")[i]
+  ggsave(paste0("Cluster2_clean_edgeR_volcano_", comparison_name, "_two_sets.pdf"), 
+         plots_cluster2_two_sets[[i]], width = 9, height = 7, dpi = 300)
+}
+
+# Print summary of gene set significance
+print("Gene Set Significance Summary:")
+comparison_names <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")
+df_list <- list(tab_WT_vs_LD_cluster2, tab_WT_vs_LD_NAC_cluster2, tab_LD_vs_LD_NAC_cluster2, 
+                tab_WT_vs_WT_NAC_cluster2, tab_WT_NAC_vs_LD_NAC_cluster2)
+
+for (i in 1:length(df_list)) {
+  current_df <- df_list[[i]]
+  
+  sig_LD <- current_df %>%
+    filter(gene %in% LD_specific_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  sig_LD_NAC <- current_df %>%
+    filter(gene %in% LD_NAC_specific_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  print(paste("====", comparison_names[i], "===="))
+  print(paste("LD specific genes:", nrow(sig_LD), "significant"))
+  if (nrow(sig_LD) > 0) print(sig_LD %>% select(gene, logFC, FDR))
+  
+  print(paste("LD_NAC specific genes:", nrow(sig_LD_NAC), "significant"))
+  if (nrow(sig_LD_NAC) > 0) print(sig_LD_NAC %>% select(gene, logFC, FDR))
+  print("")
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Define the two gene lists for mitochondrial/metabolism and 22q11
+mitochondrial_metabolism_genes <- c(
+  "Sesn2", "Ddit4", "Bhlhe40", "Mtor", "Tsc1", "Tsc2", "Uqcrc1", "Uqcrc2",
+  "Foxo3", "Cat", "Sod1", "Sod2", "Sirt3", "Nfkb1", "Hif1a", "Gstp1",
+  "Prdx1", "Prdx2", "Prdx5", "Hmox1", "Park7", "Psmb5", "Txnrd1", 
+  "Slc38a1", "Nfe2l2"
+)
+
+x22q11_genes <- c("Ranbp1", "Dgcr8", "Cdc45", "Trmt2a", "Comt", "Tango2", "Mrpl40", 
+                  "Slc25a1", "Zdhhc8", "Txnrd2", "Hira", "Prodh")
+
+# Print confirmation
+print(paste("Mitochondrial/Metabolism genes:", length(mitochondrial_metabolism_genes), "genes"))
+print(paste("22q11 genes:", length(x22q11_genes), "genes"))
+
+# Define volcano function for EdgeR results with mitochondrial/metabolism and 22q11 highlighting
+volcano_mito_22q11 <- function(df, lfc = "logFC", p = "PValue", gene = "gene", 
+                              fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  # Create gene set categories
+  df <- df %>%
+    mutate(
+      gene_set = case_when(
+        gene %in% x22q11_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "22q11 Significant",
+        gene %in% mitochondrial_metabolism_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Mito/Metab Significant",
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Other Significant",
+        TRUE ~ "Not significant"
+      ),
+      # Create label column
+      label = case_when(
+        gene_set == "22q11 Significant" ~ gene,
+        gene_set == "Mito/Metab Significant" ~ gene,
+        TRUE ~ ""
+      )
+    )
+  
+  # Create the plot
+  p <- ggplot(df, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = gene_set, size = gene_set)) +
+    geom_point(alpha = 0.7) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "gray50") +
+    # Add encircling for 22q11 genes
+    geom_point(data = subset(df, gene_set == "22q11 Significant"), 
+               shape = 1, size = 3, color = "darkgreen", stroke = 1.2) +
+    # Add encircling for mitochondrial/metabolism genes
+    geom_point(data = subset(df, gene_set == "Mito/Metab Significant"), 
+               shape = 1, size = 3, color = "darkorange", stroke = 1.2) +
+    # Add labels for both gene sets
+    geom_text_repel(
+      aes(label = label, color = gene_set),
+      size = 3.2,
+      fontface = "bold",
+      max.overlaps = 30,
+      box.padding = 0.6,
+      segment.size = 0.5,
+      min.segment.length = 0,
+      show.legend = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "22q11 Significant" = "darkgreen",
+        "Mito/Metab Significant" = "darkorange",
+        "Other Significant" = "red3",
+        "Not significant" = "grey70"
+      )
+    ) +
+    scale_size_manual(
+      values = c(
+        "22q11 Significant" = 2.5,
+        "Mito/Metab Significant" = 2.5,
+        "Other Significant" = 1.5,
+        "Not significant" = 1
+      )
+    ) +
+    labs(
+      title = title, 
+      x = "log2 fold-change", 
+      y = "-log10(p-value)"
+    ) +
+    theme_classic() +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9)
+    ) +
+    # Ensure symmetrical x-axis
+    expand_limits(x = symmetric_limits(df[[lfc]]))
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "gray50")
+  }
+  
+  return(p)
+}
+
+# Create a list of plots with mitochondrial/metabolism and 22q11 highlighting
+plots_cluster2_mito_22q11 <- list(
+  volcano_mito_22q11(tab_WT_vs_LD_cluster2, title = "Cluster 2: WT vs LD"),
+  volcano_mito_22q11(tab_WT_vs_LD_NAC_cluster2, title = "Cluster 2: WT vs LD_NAC"),
+  volcano_mito_22q11(tab_LD_vs_LD_NAC_cluster2, title = "Cluster 2: LD vs LD_NAC"),
+  volcano_mito_22q11(tab_WT_vs_WT_NAC_cluster2, title = "Cluster 2: WT vs WT_NAC"),
+  volcano_mito_22q11(tab_WT_NAC_vs_LD_NAC_cluster2, title = "Cluster 2: WT_NAC vs LD_NAC")
+)
+
+# Save as multi-page PDF
+ggsave("Cluster2_clean_edgeR_volcano_plots_mito_22q11.pdf", 
+       plot = gridExtra::marrangeGrob(plots_cluster2_mito_22q11, nrow = 1, ncol = 1), 
+       width = 9, height = 11, device = "pdf")
+
+# Also save individual plots for easier viewing
+for (i in 1:length(plots_cluster2_mito_22q11)) {
+  comparison_name <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")[i]
+  ggsave(paste0("Cluster2_clean_edgeR_volcano_", comparison_name, "_mito_22q11.pdf"), 
+         plots_cluster2_mito_22q11[[i]], width = 9, height = 7, dpi = 300)
+}
+
+# Print summary of gene set significance
+print("Mitochondrial/Metabolism and 22q11 Gene Set Significance Summary:")
+comparison_names <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")
+df_list <- list(tab_WT_vs_LD_cluster2, tab_WT_vs_LD_NAC_cluster2, tab_LD_vs_LD_NAC_cluster2, 
+                tab_WT_vs_WT_NAC_cluster2, tab_WT_NAC_vs_LD_NAC_cluster2)
+
+for (i in 1:length(df_list)) {
+  current_df <- df_list[[i]]
+  
+  sig_22q11 <- current_df %>%
+    filter(gene %in% x22q11_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  sig_mito <- current_df %>%
+    filter(gene %in% mitochondrial_metabolism_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  print(paste("====", comparison_names[i], "===="))
+  print(paste("22q11 genes:", nrow(sig_22q11), "significant"))
+  if (nrow(sig_22q11) > 0) print(sig_22q11 %>% select(gene, logFC, FDR))
+  
+  print(paste("Mitochondrial/Metabolism genes:", nrow(sig_mito), "significant"))
+  if (nrow(sig_mito) > 0) print(sig_mito %>% select(gene, logFC, FDR))
+  print("")
+}
+
+
+
+
+
+
+```
+
+```{r # 13. Heatmaps for Cluster 2 Cleaned}
+
+
+pdf("Cluster2_clean_all_heatmaps_by_genotype.pdf", width = 10, height = 12)
+
+gene_sets <- list(
+  "Mitochondrial/metabolism" = c("Foxo3", "Cat", "Sod1", "Sod2", "Sirt3", "Nfkb1", "Hif1a", 
+                                 "Gstp1", "Prdx1", "Prdx2", "Prdx5", "Hmox1", "Park7", 
+                                 "Psmb5", "Txnrd1", "Slc38a1", "Nfe2l2", "Sesn2", "Ddit4",
+                                 "Bhlhe40", "Mtor", "Tsc1", "Tsc2", "Uqcrc1", "Uqcrc2"),
+
+  "LDvsLD-NAC specific" = c("Wif1", "Npas4", "Rgs2", "Lgi2", "Slitrk6", "Nr4a2", "Rcan2",
+                            "Adcyap1", "Nap1l5", "Omg", "Grm2", "Hdac9", "Osbpl3", "Spock3",
+                            "Aox1", "Srxn1", "Sidt1", "Ngef", "Osgin1", "Hcn1", "Egr1"),
+
+  "WTvsLD specific" = c("Gucy1a2", "Vps13c", "Mirg", "Nyap2", "Pclo", "Lnpep", "Atm", "Proser1",
+                        "B9d2"),
+  "WTvsLD specific non-DE 50-100" = c("Dcc", "Nfat5", "Ccdc82", "Unc80", "Arfgef3", "Fzd3", "Klf12",
+                        "Fkbp2", "Hes5", "Olig1", "Uqcc3", "Prr7", "Lmo1", "Zfp771",
+                        "Nnat", "Zfyve16", "Klhl11", "Ccdc124"),
+  "22q11 Genes" = c("Ranbp1", "Dgcr8", "Cdc45", "Trmt2a", "Comt", "Tango2", "Mrpl40",
+                    "Slc25a1", "Zdhhc8", "Txnrd2", "Hira", "Prodh"),
+    "11 NAC common Genes figure 4" = c("Grm2", "Wif1", "Lgi2", "Rgs2", "Srxn1", "Osgin1"),
+    
+    "14 NAC LD specific Genes figure 4" = c("Hcn1", "Aox1", "Hdac9", "Nap1l5", "Adcyap1", "Nr4a2")
+)
+
+genotype_order <- c("WT", "LD", "LD-NAC", "WT-NAC")
+
+for (set_name in names(gene_sets)) {
+  genes_found <- gene_sets[[set_name]][gene_sets[[set_name]] %in% rownames(cluster_2_clean)]
+  if (length(genes_found) == 0) {
+    cat("No genes found for", set_name, "\n")
+    next
+  }
+
+  cat("Processing", set_name, "with", length(genes_found), "genes\n")
+
+  avg_expression <- AverageExpression(
+    cluster_2_clean,
+    features = genes_found,
+    group.by = "genotype",
+    assays = names(Assays(cluster_2_clean))[1],
+    slot = "data"
+  )[[1]]
+
+  # Convert sparse to dense matrix (important!)
+  avg_expression <- as.matrix(avg_expression)
+
+  # Match genotype order
+  cols_to_use <- intersect(genotype_order, colnames(avg_expression))
+  if (length(cols_to_use) == 0) next
+  avg_expression <- avg_expression[, cols_to_use, drop = FALSE]
+
+  # Scale and clean
+  mat_scaled <- t(scale(t(avg_expression)))
+  mat_scaled[is.na(mat_scaled)] <- 0
+  col_fun <- colorRamp2(c(-2, 0, 2), c("navy", "white", "firebrick"))
+
+  # Heatmap
+  hm <- Heatmap(
+    mat_scaled,
+    name = "Z-score",
+    cluster_rows = TRUE,
+    cluster_columns = FALSE,
+    col = col_fun,
+    row_names_gp = gpar(fontsize = 8),
+    column_names_gp = gpar(fontsize = 10),
+    heatmap_legend_param = list(title = "Expression (z)"),
+    column_title = paste("Cluster 2 -", set_name, "(", length(genes_found), "genes)"),
+    show_row_names = TRUE
+  )
+
+  draw(hm)
+  grid.newpage()
+}
+
+dev.off()
+cat("✅ Saved: Cluster2_clean_all_heatmaps_by_genotype.pdf\n")
+
+```
+
+```{r heatmap test also works and quick way}
+
+pdf("Cluster2_clean_all_heatmaps_by_genotype.pdf", width = 10, height = 12)
+
+# correct genotype order (use hyphens)
+genotype_order <- c("WT", "LD", "LD-NAC", "WT-NAC")
+
+# loop over each gene set
+for (i in seq_along(gene_sets)) {
+  set_name <- names(gene_sets)[i]
+  genes_found <- gene_sets[[i]][gene_sets[[i]] %in% rownames(cluster_2_clean)]
+  
+  if (length(genes_found) == 0) {
+    cat("Skipping", set_name, "- no genes found\n")
+    next
+  }
+  
+  cat("Processing", set_name, "with", length(genes_found), "genes\n")
+  
+  avg_expression <- AverageExpression(
+    cluster_2_clean,
+    features = genes_found,
+    group.by = "genotype",
+    assays = names(Assays(cluster_2_clean))[1],
+    slot = "data"
+  )[[1]]
+  
+  # reorder genotype columns safely
+  cols_to_use <- intersect(genotype_order, colnames(avg_expression))
+  avg_expression <- avg_expression[, cols_to_use, drop = FALSE]
+  
+  # scale by gene (row-wise z-score)
+  mat_scaled <- t(scale(t(avg_expression)))
+  mat_scaled[is.na(mat_scaled)] <- 0
+  
+  col_fun <- colorRamp2(c(-2, 0, 2), c("navy", "white", "firebrick"))
+  
+  hm <- Heatmap(
+    mat_scaled,
+    name = "Z-score",
+    cluster_rows = TRUE,
+    cluster_columns = FALSE,
+    col = col_fun,
+    row_names_gp = gpar(fontsize = 8),
+    column_names_gp = gpar(fontsize = 10),
+    column_title = paste("Cluster 2 -", set_name, "(", length(genes_found), "genes)"),
+    show_row_names = TRUE
+  )
+  
+  draw(hm)
+  if (i < length(gene_sets)) grid.newpage()
+}
+
+dev.off()
+cat("✅ Saved: Cluster2_clean_all_heatmaps_by_genotype.pdf\n")
+
+```
+
+
+```{r gsea}
+# Load required packages for pathway analysis
+library(clusterProfiler)
+library(org.Mm.eg.db)  # Mouse database (replace with org.Hs.eg.db for human)
+library(enrichplot)
+library(DOSE)
+library(fgsea)
+library(msigdbr)
+library(pathview)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+
+# 1. PREPARE GENE LISTS FOR PATHWAY ANALYSIS
+
+# Function to prepare ranked gene list for GSEA
+prepare_gsea_rankings <- function(edgeR_df, method = "logFC") {
+  # Remove rows with NA values
+  edgeR_df <- edgeR_df[!is.na(edgeR_df$logFC) & !is.na(edgeR_df$FDR), ]
+  
+  if (method == "logFC") {
+    # Rank by logFC (for GSEA)
+    rankings <- edgeR_df$logFC
+    names(rankings) <- edgeR_df$gene
+  } else if (method == "signed_pval") {
+    # Rank by signed p-value (-log10(FDR) * sign(logFC))
+    rankings <- -log10(edgeR_df$FDR) * sign(edgeR_df$logFC)
+    names(rankings) <- edgeR_df$gene
+  }
+  
+  # Sort in decreasing order
+  rankings <- sort(rankings, decreasing = TRUE)
+  return(rankings)
+}
+
+# Prepare ranked lists for each comparison
+ranked_LD_vs_WT <- prepare_gsea_rankings(tab_WT_vs_LD_cluster2)
+ranked_LDNAC_vs_WT <- prepare_gsea_rankings(tab_WT_vs_LD_NAC_cluster2)
+ranked_LDNAC_vs_LD <- prepare_gsea_rankings(tab_LD_vs_LD_NAC_cluster2)
+
+# 2. LOAD GENE SETS
+
+# Get MSigDB gene sets (Hallmark, C2:CP, C5:GO)
+hallmark_sets <- msigdbr(species = "Mus musculus", category = "H")
+kegg_sets <- msigdbr(species = "Mus musculus", category = "C2", subcategory = "CP")
+go_bp_sets <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "BP")
+go_mf_sets <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "MF")
+go_cc_sets <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "CC")
+
+# Convert to list format for fgsea
+hallmark_list <- split(hallmark_sets$gene_symbol, hallmark_sets$gs_name)
+kegg_list <- split(kegg_sets$gene_symbol, kegg_sets$gs_name)
+go_bp_list <- split(go_bp_sets$gene_symbol, go_bp_sets$gs_name)
+go_mf_list <- split(go_mf_sets$gene_symbol, go_mf_sets$gs_name)
+go_cc_list <- split(go_cc_sets$gene_symbol, go_cc_sets$gs_name)
+
+# 3. RUN GSEA WITH FGSEA
+
+run_gsea_analysis <- function(ranked_list, gene_sets, gene_set_name, comparison_name) {
+  set.seed(123)
+  
+  # Check if ranked list is valid
+  if (length(ranked_list) == 0) {
+    warning(paste("Empty ranked list for", comparison_name, gene_set_name))
+    return(NULL)
+  }
+  
+  # Check if gene sets are valid
+  if (length(gene_sets) == 0) {
+    warning(paste("Empty gene sets for", comparison_name, gene_set_name))
+    return(NULL)
+  }
+  
+  # Run GSEA with error handling
+  fgsea_res <- tryCatch({
+    fgseaMultilevel(
+      pathways = gene_sets,
+      stats = ranked_list,
+      minSize = 15,
+      maxSize = 500,
+      eps = 1e-50
+    )
+  }, error = function(e) {
+    message(paste("GSEA failed for", comparison_name, gene_set_name, ":", e$message))
+    return(NULL)
+  })
+  
+  # Check if results are empty
+  if (is.null(fgsea_res) || nrow(fgsea_res) == 0) {
+    message(paste("No GSEA results for", comparison_name, gene_set_name))
+    return(NULL)
+  }
+  
+  # Fix the nMoreExtreme column if it contains empty vectors
+  if ("nMoreExtreme" %in% names(fgsea_res)) {
+    fgsea_res$nMoreExtreme <- sapply(fgsea_res$nMoreExtreme, function(x) {
+      if (length(x) == 0) {
+        return(NA_real_)
+      } else {
+        return(as.numeric(x))
+      }
+    })
+  }
+  
+  # Convert to regular data frame
+  fgsea_res <- as.data.frame(fgsea_res)
+  
+  # Convert leadingEdge to character column
+  fgsea_res$leadingEdge_genes <- sapply(fgsea_res$leadingEdge, function(x) {
+    if(length(x) > 0) {
+      paste(x, collapse = ";")
+    } else {
+      ""
+    }
+  })
+  
+  # Remove the original list column
+  fgsea_res$leadingEdge <- NULL
+  
+  # Add comparison and gene set info
+  fgsea_res$comparison <- comparison_name
+  fgsea_res$gene_set <- gene_set_name
+  
+  # Order by NES and p-value
+  fgsea_res <- fgsea_res[order(fgsea_res$padj, -abs(fgsea_res$NES)), ]
+  
+  return(fgsea_res)
+}
+
+# Run GSEA for all comparisons and gene sets
+gsea_results <- list()
+
+# LD vs WT
+message("Running LD_vs_WT comparisons...")
+gsea_results[["LD_vs_WT_hallmark"]] <- run_gsea_analysis(ranked_LD_vs_WT, hallmark_list, "Hallmark", "LD_vs_WT")
+gsea_results[["LD_vs_WT_kegg"]] <- run_gsea_analysis(ranked_LD_vs_WT, kegg_list, "KEGG", "LD_vs_WT")
+gsea_results[["LD_vs_WT_go_bp"]] <- run_gsea_analysis(ranked_LD_vs_WT, go_bp_list, "GO_BP", "LD_vs_WT")
+
+# LD_NAC vs WT
+message("Running LDNAC_vs_WT comparisons...")
+gsea_results[["LDNAC_vs_WT_hallmark"]] <- run_gsea_analysis(ranked_LDNAC_vs_WT, hallmark_list, "Hallmark", "LDNAC_vs_WT")
+gsea_results[["LDNAC_vs_WT_kegg"]] <- run_gsea_analysis(ranked_LDNAC_vs_WT, kegg_list, "KEGG", "LDNAC_vs_WT")
+gsea_results[["LDNAC_vs_WT_go_bp"]] <- run_gsea_analysis(ranked_LDNAC_vs_WT, go_bp_list, "GO_BP", "LDNAC_vs_WT")
+
+# LD_NAC vs LD
+message("Running LDNAC_vs_LD comparisons...")
+gsea_results[["LDNAC_vs_LD_hallmark"]] <- run_gsea_analysis(ranked_LDNAC_vs_LD, hallmark_list, "Hallmark", "LDNAC_vs_LD")
+gsea_results[["LDNAC_vs_LD_kegg"]] <- run_gsea_analysis(ranked_LDNAC_vs_LD, kegg_list, "KEGG", "LDNAC_vs_LD")
+gsea_results[["LDNAC_vs_LD_go_bp"]] <- run_gsea_analysis(ranked_LDNAC_vs_LD, go_bp_list, "GO_BP", "LDNAC_vs_LD")
+
+# 4. COMBINE AND SAVE GSEA RESULTS
+
+# Remove NULL results
+gsea_results <- gsea_results[!sapply(gsea_results, is.null)]
+
+# Check if we have any results
+if(length(gsea_results) > 0) {
+  
+  # Combine all results
+  all_gsea_results <- do.call(rbind, gsea_results)
+  rownames(all_gsea_results) <- NULL
+  
+  # Ensure it's a proper data frame without list columns
+  all_gsea_results <- as.data.frame(all_gsea_results)
+  
+  # Remove any remaining list columns
+  list_columns <- sapply(all_gsea_results, is.list)
+  if(any(list_columns)) {
+    warning("Removing list columns: ", paste(names(all_gsea_results)[list_columns], collapse = ", "))
+    all_gsea_results <- all_gsea_results[, !list_columns]
+  }
+  
+  # Convert all columns to appropriate types
+  all_gsea_results$pathway <- as.character(all_gsea_results$pathway)
+  all_gsea_results$pval <- as.numeric(all_gsea_results$pval)
+  all_gsea_results$padj <- as.numeric(all_gsea_results$padj)
+  all_gsea_results$ES <- as.numeric(all_gsea_results$ES)
+  all_gsea_results$NES <- as.numeric(all_gsea_results$NES)
+  
+  # Handle nMoreExtreme column carefully
+  if("nMoreExtreme" %in% names(all_gsea_results)) {
+    all_gsea_results$nMoreExtreme <- sapply(all_gsea_results$nMoreExtreme, function(x) {
+      if(length(x) == 0 || is.null(x)) {
+        return(NA_real_)
+      } else {
+        return(as.numeric(x))
+      }
+    })
+  }
+  
+  all_gsea_results$size <- as.numeric(all_gsea_results$size)
+  
+  if("leadingEdge_genes" %in% names(all_gsea_results)) {
+    all_gsea_results$leadingEdge_genes <- as.character(all_gsea_results$leadingEdge_genes)
+  }
+  
+  all_gsea_results$comparison <- as.character(all_gsea_results$comparison)
+  all_gsea_results$gene_set <- as.character(all_gsea_results$gene_set)
+  
+  # Save comprehensive results
+  write.csv(all_gsea_results, "Cluster2_EdgeR_GSEA_All_Results.csv", row.names = FALSE)
+  
+  # Filter significant results (FDR < 0.25 for GSEA)
+  significant_gsea <- all_gsea_results[all_gsea_results$padj < 0.25 & !is.na(all_gsea_results$padj), ]
+  write.csv(significant_gsea, "Cluster2_EdgeR_GSEA_Significant.csv", row.names = FALSE)
+  
+  print("GSEA completed successfully!")
+  print(paste("Total pathways tested:", nrow(all_gsea_results)))
+  print(paste("Significant pathways (FDR < 0.25):", nrow(significant_gsea)))
+  
+  # Print top pathways by comparison
+  for(comp in unique(all_gsea_results$comparison)) {
+    comp_results <- all_gsea_results[all_gsea_results$comparison == comp & all_gsea_results$padj < 0.25 & !is.na(all_gsea_results$padj), ]
+    if(nrow(comp_results) > 0) {
+      print(paste("Top pathways for", comp, ":"))
+      top_pathways <- head(comp_results[order(comp_results$padj), c("pathway", "NES", "padj")], 5)
+      print(top_pathways)
+    }
+  }
+  
+  # 5. CREATE VISUALIZATIONS
+  
+  # Enhanced visualization function
+  create_gsea_visualizations <- function(all_results, sig_results) {
+    
+    # Convert to data frame to ensure proper handling
+    all_results <- as.data.frame(all_results)
+    sig_results <- as.data.frame(sig_results)
+    
+    # Remove any list columns from visualization data
+    list_cols_all <- sapply(all_results, is.list)
+    if(any(list_cols_all)) {
+      all_results <- all_results[, !list_cols_all]
+    }
+    
+    list_cols_sig <- sapply(sig_results, is.list)
+    if(any(list_cols_sig)) {
+      sig_results <- sig_results[, !list_cols_sig]
+    }
+    
+    # 1. Dot plot of top pathways across comparisons
+    create_dot_plot <- function(sig_data, n_pathways = 15) {
+      # Ensure we have the required columns and data
+      if(nrow(sig_data) == 0) {
+        message("No significant data for dot plot")
+        return(ggplot() + theme_void() + labs(title = "No significant pathways for dot plot"))
+      }
+      
+      required_cols <- c("pathway", "comparison", "padj", "NES")
+      missing_cols <- setdiff(required_cols, names(sig_data))
+      if(length(missing_cols) > 0) {
+        message("Missing required columns for dot plot: ", paste(missing_cols, collapse = ", "))
+        return(ggplot() + theme_void() + labs(title = "Missing columns for dot plot"))
+      }
+      
+      # Get the top pathways by absolute NES across all comparisons
+      top_pathways <- sig_data %>%
+        group_by(pathway) %>%
+        summarise(max_abs_NES = max(abs(NES))) %>%
+        arrange(desc(max_abs_NES)) %>%
+        head(n_pathways) %>%
+        pull(pathway)
+      
+      plot_data <- sig_data[sig_data$pathway %in% top_pathways, ]
+      
+      ggplot(plot_data, aes(x = comparison, y = pathway)) +
+        geom_point(aes(size = -log10(padj), color = NES)) +
+        scale_color_gradient2(low = "blue", mid = "white", high = "red", 
+                             midpoint = 0, name = "NES") +
+        scale_size_continuous(name = "-Log10(FDR)", range = c(2, 8)) +
+        labs(title = "Top Enriched Pathways Across Comparisons",
+             subtitle = "Bubble size: -log10(FDR), Color: NES",
+             x = "Comparison", y = "Pathway") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1),
+              axis.text.y = element_text(size = 8))
+    }
+    
+    # 2. NES comparison bar plot
+    create_nes_barplot <- function(sig_data, top_n = 10) {
+      # Ensure we have the required columns and data
+      if(nrow(sig_data) == 0) {
+        message("No significant data for bar plot")
+        return(ggplot() + theme_void() + labs(title = "No significant pathways for bar plot"))
+      }
+      
+      required_cols <- c("pathway", "comparison", "NES")
+      missing_cols <- setdiff(required_cols, names(sig_data))
+      if(length(missing_cols) > 0) {
+        message("Missing required columns for bar plot: ", paste(missing_cols, collapse = ", "))
+        return(ggplot() + theme_void() + labs(title = "Missing columns for bar plot"))
+      }
+      
+      # Get top pathways for each comparison
+      top_by_comparison <- sig_data %>%
+        group_by(comparison) %>%
+        slice_max(order_by = abs(NES), n = top_n) %>%
+        ungroup()
+      
+      ggplot(top_by_comparison, aes(x = NES, y = reorder(pathway, NES), fill = NES)) +
+        geom_col() +
+        scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                            midpoint = 0, name = "NES") +
+        labs(title = "Top Pathways by Normalized Enrichment Score",
+             x = "NES", y = "") +
+        facet_wrap(~comparison, scales = "free_y", ncol = 1) +
+        theme_minimal() +
+        theme(axis.text.y = element_text(size = 7))
+    }
+    
+    # Create all visualizations
+    pdf("Cluster2_GSEA_Comprehensive_Visualizations.pdf", width = 12, height = 10)
+    
+    if(nrow(sig_results) > 0) {
+      tryCatch({
+        # Dot plot
+        p1 <- create_dot_plot(sig_results)
+        print(p1)
+      }, error = function(e) {
+        message("Error creating dot plot: ", e$message)
+        p_message <- ggplot() + 
+          annotate("text", x = 1, y = 1, label = paste("Error in dot plot:", e$message), size = 4) +
+          theme_void()
+        print(p_message)
+      })
+      
+      tryCatch({
+        # NES bar plot
+        p2 <- create_nes_barplot(sig_results, 8)
+        print(p2)
+      }, error = function(e) {
+        message("Error creating bar plot: ", e$message)
+        p_message <- ggplot() + 
+          annotate("text", x = 1, y = 1, label = paste("Error in bar plot:", e$message), size = 4) +
+          theme_void()
+        print(p_message)
+      })
+      
+    } else {
+      # If no significant results, create a message plot
+      p_message <- ggplot() + 
+        annotate("text", x = 1, y = 1, label = "No significant pathways found (FDR < 0.25)", size = 6) +
+        theme_void()
+      print(p_message)
+    }
+    
+    dev.off()
+    
+    # Create individual comparison plots
+    pdf("Cluster2_GSEA_By_Comparison.pdf", width = 10, height = 8)
+    
+    for(comp in unique(all_results$comparison)) {
+      comp_data <- all_results[all_results$comparison == comp, ]
+      comp_sig <- comp_data[comp_data$padj < 0.25 & !is.na(comp_data$padj), ]
+      
+      if(nrow(comp_sig) > 0) {
+        tryCatch({
+          # Create dot plot for this comparison
+          p_comp <- ggplot(comp_sig, aes(x = NES, y = reorder(pathway, NES))) +
+            geom_point(aes(size = -log10(padj), color = NES)) +
+            scale_color_gradient2(low = "blue", mid = "white", high = "red", 
+                                 midpoint = 0, name = "NES") +
+            scale_size_continuous(name = "-Log10(FDR)", range = c(2, 6)) +
+            labs(title = paste("GSEA Results:", comp),
+                 x = "Normalized Enrichment Score (NES)",
+                 y = "") +
+            theme_minimal() +
+            theme(axis.text.y = element_text(size = 8))
+          
+          print(p_comp)
+        }, error = function(e) {
+          message("Error creating plot for ", comp, ": ", e$message)
+        })
+      }
+    }
+    
+    dev.off()
+    
+    print("✅ GSEA visualizations created and saved!")
+  }
+  
+  # Create a summary report
+  create_gsea_summary_report <- function(sig_results) {
+    # Convert to data frame and remove list columns
+    sig_results <- as.data.frame(sig_results)
+    list_cols <- sapply(sig_results, is.list)
+    if(any(list_cols)) {
+      sig_results <- sig_results[, !list_cols]
+    }
+    
+    if(nrow(sig_results) == 0) {
+      report_text <- "No significant pathways found at FDR < 0.25"
+      writeLines(report_text, "GSEA_Summary_Report.txt")
+      return(report_text)
+    }
+    
+    summary_text <- paste(
+      "GSEA SUMMARY REPORT",
+      "===================",
+      paste("Total significant pathways:", nrow(sig_results)),
+      "",
+      "Breakdown by comparison:",
+      sep = "\n"
+    )
+    
+    for(comp in unique(sig_results$comparison)) {
+      comp_count <- sum(sig_results$comparison == comp)
+      up_count <- sum(sig_results$comparison == comp & sig_results$NES > 0)
+      down_count <- sum(sig_results$comparison == comp & sig_results$NES < 0)
+      
+      summary_text <- paste(
+        summary_text,
+        paste(comp, ":", comp_count, "pathways (", up_count, "up,", down_count, "down)"),
+        sep = "\n"
+      )
+    }
+    
+    # Top pathways overall
+    top_overall <- sig_results %>%
+      arrange(padj) %>%
+      head(10)
+    
+    pathway_summaries <- sapply(1:nrow(top_overall), function(i) {
+      paste(top_overall$pathway[i], " (NES=", round(top_overall$NES[i], 2), ", FDR=", 
+            formatC(top_overall$padj[i], format = "e", digits = 2), ")", sep = "")
+    })
+    
+    summary_text <- paste(
+      summary_text,
+      "",
+      "Top 10 most significant pathways:",
+      paste(pathway_summaries, collapse = "\n"),
+      sep = "\n"
+    )
+    
+    # Write to file
+    writeLines(summary_text, "GSEA_Summary_Report.txt")
+    
+    return(summary_text)
+  }
+  
+  # Now run the visualizations and summary report
+  create_gsea_visualizations(all_gsea_results, significant_gsea)
+  
+  # Generate summary report
+  report <- create_gsea_summary_report(significant_gsea)
+  print(report)
+  
+} else {
+  print("No GSEA results were generated. Please check the input data and pathway databases.")
+}
+
+print("🎉 GSEA analysis complete! Check the generated files:")
+print("- Cluster2_EdgeR_GSEA_All_Results.csv (all pathways)")
+print("- Cluster2_EdgeR_GSEA_Significant.csv (significant pathways only)")
+print("- Cluster2_GSEA_Comprehensive_Visualizations.pdf (all plots)")
+print("- Cluster2_GSEA_By_Comparison.pdf (individual comparison plots)")
+print("- GSEA_Summary_Report.txt (text summary)")c(
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_focused_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_LD_vs_LD_NAC_focused_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_LD_vs_LD_NAC_significant_only_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_significant_only_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_NAC_vs_LD_NAC_focused_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_NAC_vs_LD_NAC_significant_only_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_vs_LD_focused_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_vs_LD_NAC_focused_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_vs_LD_NAC_significant_only_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_vs_LD_significant_only_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_vs_WT_NAC_focused_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_edgeR_volcano_WT_vs_WT_NAC_significant_only_three_genesets.pdf",
+  "~/labs/lamantia/Shah/Xenium Files/saveRDS/Cluster2_clean/cluster2_gene_set_significance_summary.csv"
+)
+
+```
+
+
+```{r volcano significant only gene with 3 labels}
+# Load required packages
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+# Define helper functions first
+calculate_pvalue_cutoff <- function(df, p = "PValue", fdr = "FDR", fdr_cut = 0.05) {
+  if (!fdr %in% colnames(df)) {
+    warning("FDR column not found, using PValue column instead")
+    # Find the p-value that corresponds to the desired FDR cutoff
+    df_sorted <- df[order(df[[p]]), ]
+    df_sorted$rank <- 1:nrow(df_sorted)
+    df_sorted$fdr_estimated <- df_sorted[[p]] * nrow(df_sorted) / df_sorted$rank
+    p_cut <- max(df_sorted[[p]][df_sorted$fdr_estimated <= fdr_cut], na.rm = TRUE)
+  } else {
+    # Find the p-value that corresponds to the desired FDR cutoff
+    df_sorted <- df[order(df[[p]]), ]
+    p_cut <- max(df_sorted[[p]][df_sorted[[fdr]] <= fdr_cut], na.rm = TRUE)
+  }
+  return(p_cut)
+}
+
+symmetric_limits <- function(x) {
+  max_abs <- max(abs(x), na.rm = TRUE)
+  c(-max_abs, max_abs)
+}
+
+# Define the three gene lists for mitochondrial/metabolism, 22q11, and in vitro DE genes
+mitochondrial_metabolism_genes <- c( "Park7", "Prdx5","Ddit4", "Sirt3", 
+  "Foxo3", "Nfe2l2", "Sesn2",  "Uqcrc1", "Bhlhe40", "Hmox1", "Nfkb1", "Mtor", "Tsc1", "Slc38a1", "Cat", "Prdx2", "Sod2",  "Psmb5","Gstp1", "Hif1a", "Prdx1", "Uqcrc2", "Sod1",
+  "Txnrd1", "Tsc2"
+)
+
+in_vitro_de_genes <- c(
+  "Wif1", "Npas4", "Rgs2", "Lgi2", "Slitrk6", "Nr4a2", "Rcan2", "Adcyap1", 
+  "Nap1l5", "Omg", "Grm2", "Hdac9", "Osbpl3", "Spock3", "Aox1", 
+  "Srxn1", "Sidt1", "Ngef", "Osgin1", "Hcn1", "Egr1", "Gucy1a2", "Vps13c", "Mirg", "Nyap2", "Pclo", "Lnpep", "Atm", "Proser1", 
+  "B9d2"
+)
+
+x22q11_genes <- c("Ranbp1", "Dgcr8", "Cdc45", "Trmt2a", "Comt", "Tango2", "Mrpl40", 
+                  "Slc25a1", "Zdhhc8", "Txnrd2", "Hira", "Prodh")
+
+# Print confirmation
+print(paste("Mitochondrial/Metabolism genes:", length(mitochondrial_metabolism_genes), "genes"))
+print(paste("In vitro DE genes:", length(in_vitro_de_genes), "genes"))
+print(paste("22q11 genes:", length(x22q11_genes), "genes"))
+
+# Define volcano function for EdgeR results with all three gene sets highlighting
+volcano_mito_22q11_invitro <- function(df, lfc = "logFC", p = "PValue", gene = "gene", 
+                              fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  # Create gene set categories
+  df <- df %>%
+    mutate(
+      gene_set = case_when(
+        gene %in% x22q11_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "22q11 Significant",
+        gene %in% mitochondrial_metabolism_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Mito/Metab Significant",
+        gene %in% in_vitro_de_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "In vitro DE Significant",
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Other Significant",
+        TRUE ~ "Not significant"
+      ),
+      # Create label column
+      label = case_when(
+        gene_set == "22q11 Significant" ~ gene,
+        gene_set == "Mito/Metab Significant" ~ gene,
+        gene_set == "In vitro DE Significant" ~ gene,
+        TRUE ~ ""
+      )
+    )
+  
+  # Filter to show only significant points for cleaner visualization
+  df_sig <- df %>% filter(FDR < fdr_cut & abs(get(lfc)) >= lfc_cut)
+  
+  # Create the plot with only significant points
+  p <- ggplot(df_sig, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = gene_set, size = gene_set)) +
+    geom_point(alpha = 0.7) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "gray50") +
+    # Add encircling for 22q11 genes
+    geom_point(data = subset(df_sig, gene_set == "22q11 Significant"), 
+               shape = 1, size = 3, color = "darkgreen", stroke = 1.2) +
+    # Add encircling for mitochondrial/metabolism genes
+    geom_point(data = subset(df_sig, gene_set == "Mito/Metab Significant"), 
+               shape = 1, size = 3, color = "darkorange", stroke = 1.2) +
+    # Add encircling for in vitro DE genes
+    geom_point(data = subset(df_sig, gene_set == "In vitro DE Significant"), 
+               shape = 1, size = 3, color = "darkgrey", stroke = 1.2) +
+    # Add labels for all three gene sets
+    geom_text_repel(
+      aes(label = label, color = gene_set),
+      size = 3.2,
+      fontface = "bold",
+      max.overlaps = 50,
+      box.padding = 0.6,
+      segment.size = 0.5,
+      min.segment.length = 0,
+      show.legend = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "22q11 Significant" = "darkgreen",
+        "Mito/Metab Significant" = "darkorange",
+        "In vitro DE Significant" = "darkgrey",
+        "Other Significant" = "red3"
+      )
+    ) +
+    scale_size_manual(
+      values = c(
+        "22q11 Significant" = 2.5,
+        "Mito/Metab Significant" = 2.5,
+        "In vitro DE Significant" = 2.5,
+        "Other Significant" = 1.5
+      )
+    ) +
+    labs(
+      title = title, 
+      x = "log2 fold-change", 
+      y = "-log10(p-value)"
+    ) +
+    theme_classic() +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9)
+    ) +
+    # Ensure symmetrical x-axis
+    expand_limits(x = symmetric_limits(df_sig[[lfc]]))
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "gray50")
+  }
+  
+  return(p)
+}
+
+# Alternative version that shows ALL points but focuses on significant region
+volcano_mito_22q11_invitro_focused <- function(df, lfc = "logFC", p = "PValue", gene = "gene", 
+                                      fdr_cut = 0.05, lfc_cut = 0.25, title = "") {
+  
+  # Calculate p-value cutoff that matches the FDR threshold
+  p_cut <- calculate_pvalue_cutoff(df, p = p, fdr = "FDR", fdr_cut = fdr_cut)
+  
+  # Create gene set categories
+  df <- df %>%
+    mutate(
+      gene_set = case_when(
+        gene %in% x22q11_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "22q11 Significant",
+        gene %in% mitochondrial_metabolism_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Mito/Metab Significant",
+        gene %in% in_vitro_de_genes & FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "In vitro DE Significant",
+        FDR < fdr_cut & abs(get(lfc)) >= lfc_cut ~ "Other Significant",
+        TRUE ~ "Not significant"
+      ),
+      # Create label column
+      label = case_when(
+        gene_set == "22q11 Significant" ~ gene,
+        gene_set == "Mito/Metab Significant" ~ gene,
+        gene_set == "In vitro DE Significant" ~ gene,
+        TRUE ~ ""
+      )
+    )
+  
+  # Create the plot
+  p <- ggplot(df, aes(x = .data[[lfc]], y = -log10(.data[[p]]), color = gene_set, size = gene_set)) +
+    # Plot non-significant points in light grey and smaller
+    geom_point(data = subset(df, gene_set == "Not significant"), 
+               alpha = 0.3, color = "grey80", size = 0.8) +
+    # Plot significant points
+    geom_point(data = subset(df, gene_set != "Not significant"), alpha = 0.7) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "gray50") +
+    # Add encircling for 22q11 genes
+    geom_point(data = subset(df, gene_set == "22q11 Significant"), 
+               shape = 1, size = 3, color = "darkgreen", stroke = 1.2) +
+    # Add encircling for mitochondrial/metabolism genes
+    geom_point(data = subset(df, gene_set == "Mito/Metab Significant"), 
+               shape = 1, size = 3, color = "darkorange", stroke = 1.2) +
+    # Add encircling for in vitro DE genes
+    geom_point(data = subset(df, gene_set == "In vitro DE Significant"), 
+               shape = 1, size = 3, color = "darkgrey", stroke = 1.2) +
+    # Add labels for all three gene sets
+    geom_text_repel(
+      aes(label = label, color = gene_set),
+      size = 3.2,
+      fontface = "bold",
+      max.overlaps = 50,
+      box.padding = 0.6,
+      segment.size = 0.5,
+      min.segment.length = 0,
+      show.legend = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "22q11 Significant" = "darkgreen",
+        "Mito/Metab Significant" = "darkorange",
+        "In vitro DE Significant" = "darkgrey",
+        "Other Significant" = "red3",
+        "Not significant" = "grey80"
+      )
+    ) +
+    scale_size_manual(
+      values = c(
+        "22q11 Significant" = 2.5,
+        "Mito/Metab Significant" = 2.5,
+        "In vitro DE Significant" = 2.5,
+        "Other Significant" = 1.5,
+        "Not significant" = 0.8
+      )
+    ) +
+    labs(
+      title = title, 
+      x = "log2 fold-change", 
+      y = "-log10(p-value)"
+    ) +
+    theme_classic() +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9)
+    ) +
+    # Ensure symmetrical x-axis
+    expand_limits(x = symmetric_limits(df[[lfc]])) +
+    # Focus on significant region by setting y-axis limits
+    ylim(-log10(p_cut) * 0.8, max(-log10(df[[p]][is.finite(-log10(df[[p]]))]), na.rm = TRUE) * 1.05)
+  
+  # Only add the horizontal line if a valid p_cut was found
+  if (!is.na(p_cut) && is.finite(p_cut)) {
+    p <- p + geom_hline(yintercept = -log10(p_cut), linetype = 2, color = "gray50")
+  }
+  
+  return(p)
+}
+
+# Create a list of plots with all three gene sets highlighting (significance-only version)
+plots_cluster2_all_genesets_sig <- list(
+  volcano_mito_22q11_invitro(tab_WT_vs_LD_cluster2, title = "Cluster 0: WT vs LD"),
+  volcano_mito_22q11_invitro(tab_WT_vs_LD_NAC_cluster2, title = "Cluster 0: WT vs LD_NAC"),
+  volcano_mito_22q11_invitro(tab_LD_vs_LD_NAC_cluster2, title = "Cluster 0: LD vs LD_NAC"),
+  volcano_mito_22q11_invitro(tab_WT_vs_WT_NAC_cluster2, title = "Cluster 0: WT vs WT_NAC"),
+  volcano_mito_22q11_invitro(tab_WT_NAC_vs_LD_NAC_cluster2, title = "Cluster 0: WT_NAC vs LD_NAC")
+)
+
+# Create a list of plots with all three gene sets highlighting (focused version)
+plots_cluster2_all_genesets_focused <- list(
+  volcano_mito_22q11_invitro_focused(tab_WT_vs_LD_cluster2, title = "Cluster 0: WT vs LD"),
+  volcano_mito_22q11_invitro_focused(tab_WT_vs_LD_NAC_cluster2, title = "Cluster 0: WT vs LD_NAC"),
+  volcano_mito_22q11_invitro_focused(tab_LD_vs_LD_NAC_cluster2, title = "Cluster 0: LD vs LD_NAC"),
+  volcano_mito_22q11_invitro_focused(tab_WT_vs_WT_NAC_cluster2, title = "Cluster 0: WT vs WT_NAC"),
+  volcano_mito_22q11_invitro_focused(tab_WT_NAC_vs_LD_NAC_cluster2, title = "Cluster 0: WT_NAC vs LD_NAC")
+)
+
+# Save both versions as multi-page PDFs
+ggsave("cluster2_edgeR_volcano_significant_only_three_genesets.pdf", 
+       plot = gridExtra::marrangeGrob(plots_cluster2_all_genesets_sig, nrow = 1, ncol = 1), 
+       width = 9, height = 11, device = "pdf")
+
+ggsave("cluster2_edgeR_volcano_focused_three_genesets.pdf", 
+       plot = gridExtra::marrangeGrob(plots_cluster2_all_genesets_focused, nrow = 1, ncol = 1), 
+       width = 9, height = 11, device = "pdf")
+
+# Also save individual plots for easier viewing
+comparison_names <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")
+
+for (i in 1:length(plots_cluster2_all_genesets_sig)) {
+  ggsave(paste0("cluster2_edgeR_volcano_", comparison_names[i], "_significant_only_three_genesets.pdf"), 
+         plots_cluster2_all_genesets_sig[[i]], width = 9, height = 7, dpi = 300)
+}
+
+for (i in 1:length(plots_cluster2_all_genesets_focused)) {
+  ggsave(paste0("cluster2_edgeR_volcano_", comparison_names[i], "_focused_three_genesets.pdf"), 
+         plots_cluster2_all_genesets_focused[[i]], width = 9, height = 7, dpi = 300)
+}
+
+# Print summary of gene set significance for all three gene sets
+print("Mitochondrial/Metabolism, In vitro DE, and 22q11 Gene Set Significance Summary:")
+comparison_names <- c("WT_vs_LD", "WT_vs_LD_NAC", "LD_vs_LD_NAC", "WT_vs_WT_NAC", "WT_NAC_vs_LD_NAC")
+df_list <- list(tab_WT_vs_LD_cluster2, tab_WT_vs_LD_NAC_cluster2, tab_LD_vs_LD_NAC_cluster2, 
+                tab_WT_vs_WT_NAC_cluster2, tab_WT_NAC_vs_LD_NAC_cluster2)
+
+for (i in 1:length(df_list)) {
+  current_df <- df_list[[i]]
+  
+  sig_22q11 <- current_df %>%
+    filter(gene %in% x22q11_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  sig_mito <- current_df %>%
+    filter(gene %in% mitochondrial_metabolism_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  sig_invitro <- current_df %>%
+    filter(gene %in% in_vitro_de_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  print(paste("====", comparison_names[i], "===="))
+  print(paste("22q11 genes:", nrow(sig_22q11), "significant"))
+  if (nrow(sig_22q11) > 0) {
+    # Use base R subsetting instead of dplyr::select
+    print(sig_22q11[, c("gene", "logFC", "FDR")])
+  }
+  
+  print(paste("Mitochondrial/Metabolism genes:", nrow(sig_mito), "significant"))
+  if (nrow(sig_mito) > 0) {
+    print(sig_mito[, c("gene", "logFC", "FDR")])
+  }
+  
+  print(paste("In vitro DE genes:", nrow(sig_invitro), "significant"))
+  if (nrow(sig_invitro) > 0) {
+    print(sig_invitro[, c("gene", "logFC", "FDR")])
+  }
+  print("")
+}
+
+# Create a comprehensive summary table
+summary_table <- data.frame()
+for (i in 1:length(df_list)) {
+  current_df <- df_list[[i]]
+  
+  sig_22q11 <- current_df %>%
+    filter(gene %in% x22q11_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  sig_mito <- current_df %>%
+    filter(gene %in% mitochondrial_metabolism_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  sig_invitro <- current_df %>%
+    filter(gene %in% in_vitro_de_genes & FDR < 0.05 & abs(logFC) >= 0.25)
+  
+  comp_summary <- data.frame(
+    Comparison = comparison_names[i],
+    Total_22q11_genes = length(x22q11_genes),
+    Significant_22q11 = nrow(sig_22q11),
+    Total_Mito_Metab_genes = length(mitochondrial_metabolism_genes),
+    Significant_Mito_Metab = nrow(sig_mito),
+    Total_InVitro_DE_genes = length(in_vitro_de_genes),
+    Significant_InVitro_DE = nrow(sig_invitro)
+  )
+  
+  summary_table <- rbind(summary_table, comp_summary)
+}
+
+print("Comprehensive Summary Table:")
+print(summary_table)
+write.csv(summary_table, "cluster2_gene_set_significance_summary.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+# Create a new metadata column to identify Cluster 2 cells
+all_samples$cluster_2_status <- ifelse(Cells(all_samples) %in% Cells(cluster_2_clean), 
+                                      "Cluster_2", "Other")
+
+# PCA with Cluster 2 highlighted
+p_pca <- DimPlot(all_samples,
+                 reduction = "pca",
+                 group.by = "cluster_2_status",
+                 cols = c("Cluster_2" = "#FF7F00", "Other" = "gray90"),
+                 pt.size = 0.5,
+                 order = "Cluster_2") +  # Plot Cluster 2 on top
+  ggtitle("Cluster 2 Cells in PCA Space") +
+  theme_minimal()
+
+print(p_pca)
+
+
+
+
+# Get variance explained by each PC
+pca_variance <- all_samples@reductions$pca@stdev^2
+pca_variance <- pca_variance / sum(pca_variance) * 100
+
+p_pca <- DimPlot(all_samples,
+                 reduction = "pca",
+                 group.by = "cluster_2_status",
+                 cols = c("Cluster_2" = "#FF7F00", "Other" = "gray90"),
+                 pt.size = 0.5,
+                 order = "Cluster_2") +
+  ggtitle("Cluster 2 Cells in PCA Space") +
+  xlab(paste0("PC1 (", round(pca_variance[1], 2), "%)")) +
+  ylab(paste0("PC2 (", round(pca_variance[2], 2), "%)")) +
+  theme_minimal()
+
+print(p_pca)
+
+
+
+
+library(patchwork)
+library(ggplot2)
+
+# Plot 1: Your original PCA
+p1 <- DimPlot(all_samples,
+              reduction = "pca",
+              group.by = "cluster_2_status",
+              cols = c("Cluster_2" = "#FF7F00", "Other" = "gray90"),
+              pt.size = 0.3,
+              order = "Cluster_2") +
+  ggtitle("Cluster 2 in PCA Space") +
+  theme_minimal()
+
+# Plot 2: PC loadings (most influential genes)
+# Get top genes contributing to PC1 and PC2
+pc_loadings <- all_samples@reductions$pca@feature.loadings
+top_pc1_genes <- head(rownames(pc_loadings[order(abs(pc_loadings[,1]), decreasing = TRUE),]), 10)
+top_pc2_genes <- head(rownames(pc_loadings[order(abs(pc_loadings[,2]), decreasing = TRUE),]), 10)
+
+# Create a loadings plot data frame
+loadings_df <- data.frame(
+  gene = c(top_pc1_genes, top_pc2_genes),
+  pc = c(rep("PC1", 10), rep("PC2", 10)),
+  loading = c(pc_loadings[top_pc1_genes, 1], pc_loadings[top_pc2_genes, 2])
+)
+
+p2 <- ggplot(loadings_df, aes(x = loading, y = reorder(gene, abs(loading)), fill = pc)) +
+  geom_col() +
+  facet_wrap(~pc, scales = "free") +
+  labs(x = "Loading", y = "Gene", title = "Top Genes Driving PC1 and PC2") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Combine plots
+combined <- p1 + p2 + plot_layout(widths = c(1, 1.5))
+print(combined)
+
+
+
+library(patchwork)
+
+# Before cleaning (if you have the original cluster 2 with endothelial cells)
+# If not, use the current plot but emphasize the endothelial gene story
+
+p_pca <- DimPlot(all_samples,
+                 reduction = "pca",
+                 group.by = "cluster_2_status",
+                 cols = c("Cluster_2" = "#FF7F00", "Other" = "gray90"),
+                 pt.size = 0.5,
+                 order = "Cluster_2") +
+  ggtitle("Cluster Separation After Endothelial Cell Removal") +
+  xlab("PC1 (Driven by Endothelial Genes)") +
+  ylab("PC2 (Driven by Endothelial Genes)") +
+  theme_minimal()
+
+# Add a text annotation about the finding
+p_pca <- p_pca + 
+  annotate("text", x = Inf, y = Inf, 
+           label = "PC1/PC2 loadings dominated by endothelial genes\n(VWF, PECAM1, CDH5, etc.)",
+           hjust = 1.1, vjust = 1.1, size = 3.5,
+           color = "red", fontface = "italic")
+
+print(p_pca)
+
+
+
+
+library(patchwork)
+
+# Panel A: PCA showing separation
+pca_panel <- p_pca +
+  labs(subtitle = "Clear separation after endothelial cell removal")
+
+# Panel B: Endothelial gene loadings
+loadings <- all_samples@reductions$pca@feature.loadings
+top_endo_genes <- head(rownames(loadings[order(abs(loadings[,1]), decreasing = TRUE),]), 8)
+
+loadings_df <- data.frame(
+  gene = top_endo_genes,
+  pc1_loading = loadings[top_endo_genes, 1],
+  pc2_loading = loadings[top_endo_genes, 2]
+)
+
+p_loadings <- ggplot(loadings_df, aes(x = pc1_loading, y = pc2_loading)) +
+  geom_point(size = 3, color = "red") +
+  geom_text(aes(label = gene), hjust = -0.1, vjust = 0.5, size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  ggtitle("Endothelial Genes Driving PC1/PC2") +
+  xlab("PC1 Loadings") + ylab("PC2 Loadings") +
+  theme_minimal()
+
+# Panel C: Validation of low endothelial expression in cleaned cluster
+p_vln <- VlnPlot(all_samples, 
+                 features = endothelial_markers[1:2],
+                 group.by = "cluster_2_status",
+                 cols = c("Cluster_2" = "#FF7F00", "Other" = "gray70"),
+                 pt.size = 0) +
+  theme(axis.text.x = element_text(angle = 0))
+
+# Arrange final figure
+final_figure <- (pca_panel | p_loadings) / p_vln +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(heights = c(2, 1))
+
+print(final_figure)
+```
